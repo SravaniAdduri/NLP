@@ -212,23 +212,69 @@ def render_main():
         key="main_query",
     )
 
-    # Optional LLM response to verify
-    with st.expander("📝 Optional: Provide an LLM response to verify"):
+    # Two columns for the two actions
+    col_ask, col_analyze = st.columns(2)
+
+    with col_ask:
+        ask_clicked = st.button("💬 Get Answer", type="secondary", disabled=not query)
+
+    with col_analyze:
+        analyze_clicked = st.button("🚀 Analyze for Hallucinations", type="primary", disabled=not query)
+
+    # LLM response input (only shown when analyze is the intent)
+    llm_response = ""
+    if analyze_clicked or st.session_state.get("show_llm_input", False):
+        st.session_state["show_llm_input"] = True
+        st.markdown("---")
+        st.subheader("Paste an LLM Response to Verify")
         llm_response = st.text_area(
-            "LLM Response (to check for hallucinations):",
-            placeholder="Paste an LLM-generated response here to check for hallucinations...",
+            "LLM Response:",
+            placeholder="Paste the LLM-generated response you want to fact-check...",
             height=150,
             key="llm_response",
         )
+        run_analysis = st.button("🔍 Run Full Analysis", type="primary", disabled=not (query and llm_response))
+    else:
+        run_analysis = False
 
-    # Process button
-    if st.button("🚀 Analyze", type="primary", disabled=not query):
-        with st.spinner("Processing through multi-agent pipeline..."):
-            result = process_query(query, llm_response if llm_response else "")
+    # --- MODE 1: Simple Q&A (Get Answer) ---
+    if ask_clicked and query:
+        st.session_state["show_llm_input"] = False
+        with st.spinner("Retrieving answer from knowledge base..."):
+            result = process_query(query, "")
 
         if "error" in result:
             st.error(f"Error: {result['error']}")
             return
+
+        st.markdown("---")
+        st.subheader("📋 Answer")
+        st.write(result.get("corrected_response", "No response generated."))
+
+        if result.get("citations"):
+            with st.expander("📚 Sources"):
+                for citation in result["citations"]:
+                    st.markdown(f"**[{citation['id']}]** {citation['text']}")
+
+        if result.get("ranked_evidence"):
+            with st.expander(f"📖 Retrieved Evidence ({len(result['ranked_evidence'])} passages)"):
+                for i, ev in enumerate(result["ranked_evidence"], 1):
+                    st.markdown(f"**[{i}]** {ev[:300]}{'...' if len(ev) > 300 else ''}")
+                    st.markdown("---")
+
+        if result.get("metrics") and result["metrics"].get("latency_ms"):
+            st.caption(f"⏱️ Response time: {result['metrics']['latency_ms']:.0f} ms")
+
+    # --- MODE 2: Full Hallucination Analysis ---
+    if run_analysis and query and llm_response:
+        with st.spinner("Running full multi-agent analysis pipeline..."):
+            result = process_query(query, llm_response)
+
+        if "error" in result:
+            st.error(f"Error: {result['error']}")
+            return
+
+        st.markdown("---")
 
         # Display results in tabs
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -240,8 +286,11 @@ def render_main():
         ])
 
         with tab1:
+            st.subheader("Original LLM Response")
+            st.warning(llm_response)
+
             st.subheader("Corrected Response")
-            st.write(result.get("corrected_response", "No response generated."))
+            st.success(result.get("corrected_response", "No response generated."))
 
             if result.get("citations"):
                 st.subheader("Citations")
@@ -267,7 +316,7 @@ def render_main():
                 st.subheader("Sentence-Level Analysis")
                 render_hallucination_highlight(report.get("sentence_results", []))
             else:
-                st.info("💡 To use hallucination detection, expand the 'Optional: Provide an LLM response to verify' section above and paste a response you want to fact-check against the knowledge base.")
+                st.warning("Could not perform hallucination analysis. Ensure documents are uploaded to the knowledge base.")
 
         with tab3:
             st.subheader("Retrieved Evidence")
@@ -300,7 +349,7 @@ def render_main():
                             for ev in claim["supporting_evidence"]:
                                 st.text(ev[:200])
             else:
-                st.info("💡 To use fact verification, provide an LLM response to verify in the input section above.")
+                st.info("No verifiable claims found in the LLM response.")
 
             vr = result.get("verification_report")
             if vr:
@@ -319,7 +368,7 @@ def render_main():
             if metrics:
                 render_metrics(metrics)
             else:
-                st.info("Metrics will be available after hallucination analysis is performed.")
+                st.info("Metrics unavailable.")
 
         # Show errors if any
         if result.get("errors"):

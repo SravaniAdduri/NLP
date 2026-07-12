@@ -6,7 +6,8 @@ Responsible for:
 3. Ensuring the response avoids hallucinations.
 """
 
-from typing import List, Optional
+import re
+from typing import List, Optional, Tuple
 from dataclasses import dataclass
 
 from loguru import logger
@@ -52,6 +53,7 @@ class ResponseGenerationAgent:
         evidence: List[str],
         hallucination_report: Optional[HallucinationReport] = None,
         verification_report: Optional[FactVerificationReport] = None,
+        evidence_scores: Optional[List[float]] = None,
     ) -> GeneratedResponse:
         """
         Generate a corrected, factually accurate response.
@@ -61,13 +63,14 @@ class ResponseGenerationAgent:
             evidence: List of verified evidence passages.
             hallucination_report: Report from hallucination detection (optional).
             verification_report: Report from fact verification (optional).
+            evidence_scores: Cross-encoder relevance scores for each evidence passage.
             
         Returns:
             GeneratedResponse with citations.
         """
         if not evidence:
             return GeneratedResponse(
-                response="I don't have enough evidence to provide a reliable answer to this question.",
+                response="I don't have enough information in the knowledge base to answer this question. Please upload relevant documents first.",
                 citations=[],
                 num_evidence_used=0,
                 generation_method="no_evidence",
@@ -76,7 +79,7 @@ class ResponseGenerationAgent:
         if self.use_llm:
             return self._generate_with_llm(query, evidence, hallucination_report, verification_report)
         else:
-            return self._generate_extractive(query, evidence, verification_report)
+            return self._generate_extractive(query, evidence, evidence_scores, verification_report)
 
     def _generate_with_llm(
         self,
@@ -118,46 +121,35 @@ class ResponseGenerationAgent:
         self,
         query: str,
         evidence: List[str],
+        evidence_scores: Optional[List[float]],
         verification_report: Optional[FactVerificationReport],
     ) -> GeneratedResponse:
         """
-        Generate response by extracting and combining relevant evidence.
-        Used when no LLM is available. Selects the most relevant sentences
-        from evidence to construct a coherent answer.
+        Generate response by intelligently extracting from evidence.
+        Uses sentence scoring based on query relevance and evidence quality.
         """
         if not evidence:
             return GeneratedResponse(
-                response="No verified information available for this query.",
+                response="No relevant information found in the knowledge base.",
                 citations=[],
                 num_evidence_used=0,
                 generation_method="extractive",
             )
 
-        # Extract key sentences from evidence that are most relevant to the query
-        query_words = set(query.lower().split())
-        scored_sentences = []
+        # Check if evidence is actually relevant using scores
+        if evidence_scores and len(evidence_scores) > 0:
+            best_score = max(evidence_scores)
+            # Cross-encoder scores: > 0 means relevant, < -5 means not relevant
+            if best_score < -3:
+                return GeneratedResponse(
+                    response=f"The knowledge base does not contain sufficient information to answer: \"{query}\". Please upload relevant documents.",
+                    citations=[],
+                    num_evidence_used=0,
+                    generation_method="extractive_no_match",
+                )
 
-        for i, ev in enumerate(evidence):
-            sentences = [s.strip() for s in ev.replace('\n', ' ').split('.') if s.strip() and len(s.strip()) > 20]
-            for sentence in sentences:
-                sentence_words = set(sentence.lower().split())
-                overlap = len(query_words & sentence_words)
-                scored_sentences.append((sentence.strip() + '.', overlap, i))
-
-        # Sort by relevance (word overlap) and pick top sentences
-        scored_sentences.sort(key=lambda x: x[1], reverse=True)
-        selected = scored_sentences[:5]  # Take top 5 most relevant sentences
-
-        # Build response with citations
-        response_parts = []
+        # Build citations list
         citations = []
-        used_evidence_ids = set()
-
-        for sentence, score, ev_idx in selected:
-            citation_id = ev_idx + 1
-            used_evidence_ids.add(ev_idx)
-            response_parts.append(f"{sentence} [{citation_id}]")
-
         for i, ev in enumerate(evidence):
             citations.append({
                 "id": i + 1,
@@ -165,18 +157,111 @@ class ResponseGenerationAgent:
                 "marker": f"[{i+1}]",
             })
 
-        if response_parts:
-            response_text = f"Based on the available evidence for \"{query}\":\n\n" + "\n\n".join(response_parts)
-        else:
-            # Fallback: just show the most relevant evidence passage
-            response_text = f"Relevant information found:\n\n{evidence[0][:500]} [1]"
+        # Extract and score sentences from all evidence
+        query_lower = query.lower()
+        query_words = set(re.findall(r'\b\w{3,}\b', query_lower))
+        # Remove common question words from matching
+        query_words -= {"what", "who", "when", "where", "why", "how", "which",
+                        "does", "the", "are", "was", "were", "can", "could",
+                        "about", "tell", "explain", "describe", "main"}
+
+        all_sentences: List[Tuple[str, float, int]] = []  # (sentence, score, evidence_idx)
+
+        for ev_idx, ev_text in enumerate(evidence):
+            # Cross-encoder score for this evidence (higher = more relevant)
+            ev_score = evidence_scores[ev_idx] if evidence_scores and ev_idx < len(evidence_scores) else 0.0
+
+            # Split into sentences
+            sentences = re.split(r'(?<=[.!?])\s+', ev_text.replace('\n', ' '))
+
+            for sent in sentences:
+                sent = sent.strip()
+                if len(sent) < 15 or len(sent.split()) < 4:
+                    continue
+
+                # Score this sentence
+                sent_lower = sent.lower()
+                sent_words = set(re.findall(r'\b\w{3,}\b', sent_lower))
+
+                # Word overlap with query
+                overlap = len(query_words & sent_words)
+                overlap_ratio = overlap / max(len(query_words), 1)
+
+                # Boost for sentences containing query entities (capitalized words in query)
+                entity_bonus = 0
+                query_entities = re.findall(r'\b[A-Z][a-z]+\b', query)
+                for ent in query_entities:
+                    if ent.lower() in sent_lower:
+                        entity_bonus += 0.3
+
+                # Combine: cross-encoder score + word overlap + entity bonus
+                final_score = (ev_score * 0.4) + (overlap_ratio * 3.0) + entity_bonus
+
+                # Penalty for very short or very long sentences
+                word_count = len(sent.split())
+                if word_count < 6:
+                    final_score *= 0.5
+                elif word_count > 50:
+                    final_score *= 0.8
+
+                all_sentences.append((sent, final_score, ev_idx))
+
+        if not all_sentences:
+            # Fallback: just show the top evidence passage directly
+            return GeneratedResponse(
+                response=f"Here is the most relevant information found:\n\n{evidence[0][:500]} [1]",
+                citations=citations[:1],
+                num_evidence_used=1,
+                generation_method="extractive_fallback",
+            )
+
+        # Sort by score and take the best unique sentences
+        all_sentences.sort(key=lambda x: x[1], reverse=True)
+
+        # Deduplicate similar sentences
+        selected = []
+        selected_texts = []
+        used_ev_ids = set()
+
+        for sent, score, ev_idx in all_sentences:
+            if len(selected) >= 5:
+                break
+            # Check for near-duplicate
+            is_dup = False
+            for existing in selected_texts:
+                if self._sentence_similarity(sent, existing) > 0.7:
+                    is_dup = True
+                    break
+            if not is_dup:
+                selected.append((sent, score, ev_idx))
+                selected_texts.append(sent)
+                used_ev_ids.add(ev_idx)
+
+        # Build the response
+        response_lines = []
+        for sent, score, ev_idx in selected:
+            citation_id = ev_idx + 1
+            response_lines.append(f"• {sent} [{citation_id}]")
+
+        response_text = f"Based on the knowledge base, here is what I found regarding \"{query}\":\n\n"
+        response_text += "\n\n".join(response_lines)
 
         return GeneratedResponse(
             response=response_text,
             citations=citations,
-            num_evidence_used=len(used_evidence_ids),
+            num_evidence_used=len(used_ev_ids),
             generation_method="extractive",
         )
+
+    def _sentence_similarity(self, sent1: str, sent2: str) -> float:
+        """Compute word-level Jaccard similarity between two sentences."""
+        words1 = set(sent1.lower().split())
+        words2 = set(sent2.lower().split())
+        if not words1 or not words2:
+            return 0.0
+        intersection = words1 & words2
+        union = words1 | words2
+        return len(intersection) / len(union)
 
     def _build_generation_prompt(
         self,

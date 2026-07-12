@@ -223,8 +223,12 @@ class MultiAgentOrchestrator:
     def _node_retrieval(self, state: PipelineState) -> dict:
         """Node: Retrieve relevant documents from vector store."""
         try:
-            query = state.get("rewritten_query") or state["query"]
-            result = self.retrieval_agent.retrieve(query)
+            original_query = state["query"]
+            rewritten_query = state.get("rewritten_query") or original_query
+
+            # Use multi-query retrieval for better recall
+            queries = list(dict.fromkeys([rewritten_query, original_query]))  # deduplicate
+            result = self.retrieval_agent.multi_query_retrieve(queries)
 
             documents = [r.content for r in result.results]
             scores = [r.score for r in result.results]
@@ -410,6 +414,7 @@ class MultiAgentOrchestrator:
                 evidence=evidence,
                 hallucination_report=hallucination_report,
                 verification_report=None,
+                evidence_scores=state.get("evidence_scores", []),
             )
 
             return {

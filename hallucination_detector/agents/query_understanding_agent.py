@@ -224,17 +224,12 @@ class QueryUnderstandingAgent:
     ) -> str:
         """
         Rewrite the query for better retrieval performance.
-        
-        Strategies:
-        - Expand abbreviations
-        - Add context from entities
-        - Remove question-form words for retrieval
-        - Create a more search-friendly version
+        For clear queries, keep the original (semantic search handles question form well).
+        For ambiguous queries, expand with extracted entities/keywords.
         """
         if not is_ambiguous:
-            # For clear queries, just optimize for retrieval
-            rewritten = self._optimize_for_retrieval(query)
-            return rewritten
+            # Semantic search works well with natural questions - keep original
+            return query.strip().rstrip('?').strip()
 
         # For ambiguous queries, expand with keywords
         if entities:
