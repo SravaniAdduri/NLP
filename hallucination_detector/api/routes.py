@@ -100,19 +100,51 @@ async def simple_rag_query(request: QueryRequest):
         # Step 3: Build clean extractive response from top evidence
         if ranked_texts:
             import re as _re
-            parts = []
-            for i, text in enumerate(ranked_texts[:3], 1):
-                # Clean whitespace and newlines
+
+            def _split_sentences(text):
+                """Split text into sentences, handling abbreviations and decimals."""
+                # Protect common abbreviations and decimals from splitting
+                protected = text
+                protected = _re.sub(r'(\d)\.(\d)', r'\1<DOT>\2', protected)
+                for abbr in ['Dr.', 'Mr.', 'Mrs.', 'Ms.', 'Prof.', 'Sr.', 'Jr.',
+                             'Inc.', 'Ltd.', 'Corp.', 'vs.', 'etc.', 'e.g.', 'i.e.',
+                             'Fig.', 'fig.', 'Eq.', 'eq.', 'No.', 'no.', 'Vol.', 'vol.']:
+                    protected = protected.replace(abbr, abbr.replace('.', '<DOT>'))
+                sents = _re.split(r'(?<=[.!?])\s+', protected)
+                return [s.replace('<DOT>', '.').strip() for s in sents if s.strip()]
+
+            all_sents = []
+            seen = set()
+            for i, text in enumerate(ranked_texts[:5], 1):
                 clean = _re.sub(r'\s+', ' ', text.replace('\n', ' ')).strip()
-                # Split into sentences and take the most meaningful ones
-                sents = [s.strip() for s in _re.split(r'(?<=[.!?])\s+', clean) if len(s.strip()) > 20]
-                if sents:
-                    # Take up to 3 best sentences per evidence
-                    passage = " ".join(sents[:3])
-                    if len(passage) > 400:
-                        passage = passage[:400] + "..."
-                    parts.append(f"{passage} [{i}]")
-            response_text = "\n\n".join(parts) if parts else "No relevant information found."
+                for sent in _split_sentences(clean):
+                    words = sent.split()
+                    if len(words) < 5 or len(sent) < 20:
+                        continue
+                    # Skip near-duplicate sentences
+                    key = ' '.join(sorted(set(w.lower() for w in words)))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    # Ensure sentence ends properly
+                    if not sent[-1] in '.!?':
+                        sent = sent.rstrip(',;:') + '.'
+                    all_sents.append((sent, i))
+
+            if all_sents:
+                # Take top sentences, preserving source order
+                selected = all_sents[:8]
+                # Group by source for coherent paragraphs
+                groups = {}
+                for sent, src in selected:
+                    groups.setdefault(src, []).append(sent)
+                parts = []
+                for src in sorted(groups.keys()):
+                    paragraph = " ".join(groups[src]) + f" [{src}]"
+                    parts.append(paragraph)
+                response_text = "\n\n".join(parts)
+            else:
+                response_text = "No relevant information found."
         else:
             response_text = "No relevant information found in the uploaded document."
 

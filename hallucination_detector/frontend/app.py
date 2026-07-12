@@ -51,6 +51,17 @@ def api_multi_agent(query, llm_response=""):
     except Exception as e:
         return {"error": str(e)}
 
+def api_verify_response(text, evidence=None):
+    try:
+        payload = {"text": text, "evidence": evidence or []}
+        r = requests.post(f"{API_BASE_URL}/verify_response", json=payload, timeout=120)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.HTTPError as e:
+        return {"error": e.response.text}
+    except Exception as e:
+        return {"error": str(e)}
+
 # --- DISPLAY HELPERS ---
 
 def render_sentence_highlight(sentence_results):
@@ -68,6 +79,60 @@ def render_sentence_highlight(sentence_results):
             f'<b>{icon} {label}</b> (confidence: {conf:.2f})<br>{sent}</div>',
             unsafe_allow_html=True,
         )
+
+def show_hallucination_methodology():
+    """Display explanation of how hallucination is calculated"""
+    with st.expander("📖 How is Hallucination Calculated?", expanded=False):
+        st.markdown("""
+### Hallucination Detection Methodology
+
+The system uses **Natural Language Inference (NLI)** to detect hallucinations. Here's how it works:
+
+#### Step 1: Response Segmentation
+- The response is split into individual sentences
+- Each sentence is analyzed independently
+
+#### Step 2: Sentence-Level Classification (NLI)
+For each sentence in the response, the system checks it against the **top-5 most relevant evidence passages** from your document:
+
+| Label | Meaning | What it means |
+|-------|---------|---------------|
+| **✅ SUPPORTED** | The sentence is confirmed by the evidence | The statement is factually correct based on your document |
+| **❌ CONTRADICTED** | The sentence contradicts the evidence | The statement conflicts with what's in your document (HALLUCINATION) |
+| **⚠️ NEUTRAL / UNCERTAIN** | The evidence doesn't directly confirm or deny it | The statement cannot be verified from your document (potential hallucination) |
+
+#### Step 3: Hallucination Rate Calculation
+```
+Hallucination Rate = (Contradicted + Uncertain) / Total Sentences
+```
+
+**Example:**
+- Total sentences: 10
+- Supported: 6 ✅
+- Contradicted: 2 ❌
+- Uncertain: 2 ⚠️
+- **Hallucination Rate = (2 + 2) / 10 = 40%**
+
+#### Step 4: Confidence Scoring
+Each classification (SUPPORTED, CONTRADICTED, NEUTRAL) has a **confidence score** (0.0 to 1.0):
+- **High confidence (0.8-1.0)**: The system is very certain about this classification
+- **Medium confidence (0.5-0.8)**: Moderate certainty
+- **Low confidence (0.0-0.5)**: Uncertain classification
+
+**Lower confidence = less reliable hallucination detection** for that sentence
+
+#### What Makes a Response Less Hallucinating?
+- ✅ High percentage of SUPPORTED sentences
+- ✅ Low percentage of CONTRADICTED sentences
+- ✅ High confidence scores
+- ✅ Factual statements grounded in the uploaded document
+
+#### What Indicates More Hallucination?
+- ❌ High CONTRADICTED rate (direct lies)
+- ❌ High UNCERTAIN rate (unverifiable claims)
+- ❌ Low confidence scores
+- ❌ Statements that don't match the document content
+        """)
 
 def render_evidence(evidence_list, scores=None):
     if not evidence_list:
@@ -135,6 +200,9 @@ def main():
         st.markdown("---")
         col_rag, col_agent = st.columns(2)
 
+        rag = None
+        agent = None
+
         with col_rag:
             st.subheader("📄 Simple RAG")
             with st.spinner("Retrieving..."):
@@ -155,7 +223,8 @@ def main():
                 st.error(agent["error"])
             else:
                 st.markdown("**Answer:**")
-                st.success(agent.get("corrected_response", "No response."))
+                agent_response = agent.get("corrected_response") or "No response."
+                st.success(agent_response)
                 latency = agent.get("metrics", {}).get("latency_ms", 0) if agent.get("metrics") else 0
                 st.caption(f"⏱️ {latency:.0f} ms")
                 render_evidence(agent.get("ranked_evidence", []))
@@ -163,6 +232,84 @@ def main():
                     with st.expander("📑 Citations"):
                         for c in agent["citations"]:
                             st.markdown(f"**[{c['id']}]** {c['text']}")
+
+        # Automatic hallucination analysis for both generated responses
+        rag_verification = None
+        agent_verification = None
+        with st.spinner("Running hallucination analysis for both responses..."):
+            if rag and "error" not in rag and rag.get("response"):
+                rag_verification = api_verify_response(
+                    rag["response"],
+                    rag.get("evidence", []),
+                )
+            if agent and "error" not in agent and agent.get("corrected_response"):
+                agent_verification = api_verify_response(
+                    agent["corrected_response"],
+                    agent.get("ranked_evidence", []),
+                )
+
+        st.markdown("---")
+        st.subheader("🔬 Hallucination Analysis (Auto)")
+
+        col_h1, col_h2 = st.columns(2)
+
+        rag_hall_rate = 0.0
+        rag_available = False
+        with col_h1:
+            st.subheader("📄 Simple RAG")
+            if rag_verification and "error" not in rag_verification and rag_verification.get("sentence_results"):
+                rag_available = True
+                rv = rag_verification
+                rag_hall_rate = rv.get("hallucination_rate", 0.0)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("✅ Supported", rv.get("supported_count", 0))
+                c2.metric("❌ Contradicted", rv.get("contradicted_count", 0))
+                c3.metric("⚠️ Uncertain", rv.get("neutral_count", 0))
+                st.metric("Hallucination Rate", f"{rag_hall_rate:.0%}")
+                render_sentence_highlight(rv.get("sentence_results", []))
+            else:
+                st.info("Could not analyze Simple RAG response.")
+
+        agent_hall_rate = 0.0
+        agent_available = False
+        with col_h2:
+            st.subheader("🤖 Multi-Agent")
+            if agent_verification and "error" not in agent_verification and agent_verification.get("sentence_results"):
+                agent_available = True
+                av = agent_verification
+                agent_hall_rate = av.get("hallucination_rate", 0.0)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("✅ Supported", av.get("supported_count", 0))
+                c2.metric("❌ Contradicted", av.get("contradicted_count", 0))
+                c3.metric("⚠️ Uncertain", av.get("neutral_count", 0))
+                st.metric("Hallucination Rate", f"{agent_hall_rate:.0%}")
+                render_sentence_highlight(av.get("sentence_results", []))
+            else:
+                st.info("Could not analyze Multi-Agent response.")
+
+        st.markdown("---")
+        st.subheader("🏁 Which Hallucinates More?")
+        if rag_available and agent_available:
+            if rag_hall_rate > agent_hall_rate:
+                diff = rag_hall_rate - agent_hall_rate
+                st.error(
+                    f"Simple RAG hallucinates more: **{rag_hall_rate:.0%}** vs "
+                    f"Multi-Agent **{agent_hall_rate:.0%}** (difference **{diff:.0%}**)."
+                )
+            elif agent_hall_rate > rag_hall_rate:
+                diff = agent_hall_rate - rag_hall_rate
+                st.warning(
+                    f"Multi-Agent hallucinates more: **{agent_hall_rate:.0%}** vs "
+                    f"Simple RAG **{rag_hall_rate:.0%}** (difference **{diff:.0%}**)."
+                )
+            else:
+                st.success(f"Both are equal at **{rag_hall_rate:.0%}** hallucination rate.")
+
+            c1, c2 = st.columns(2)
+            c1.metric("Simple RAG Hallucination", f"{rag_hall_rate:.0%}")
+            c2.metric("Multi-Agent Hallucination", f"{agent_hall_rate:.0%}")
+        else:
+            st.info("Comparison verdict unavailable because one or both analyses could not be completed.")
 
     st.markdown("---")
 
@@ -229,7 +376,23 @@ def main():
                 c1.metric("✅ Supported", rv["supported_count"])
                 c2.metric("❌ Contradicted", rv["contradicted_count"])
                 c3.metric("⚠️ Uncertain", rv["neutral_count"])
-                st.metric("Hallucination Rate", f"{rv['hallucination_rate']:.0%}")
+                
+                # Show calculation
+                total = rv["total_sentences"]
+                contradicted = rv["contradicted_count"]
+                uncertain = rv["neutral_count"]
+                hallucinated = contradicted + uncertain
+                
+                st.markdown(f"""
+**Hallucination Calculation:**
+```
+Hallucination Rate = (Contradicted + Uncertain) / Total Sentences
+                   = ({contradicted} + {uncertain}) / {total}
+                   = {hallucinated} / {total}
+                   = {rag_hall_rate:.0%}
+```
+                """)
+                st.metric("Hallucination Rate", f"{rag_hall_rate:.0%}")
                 st.markdown("---")
                 render_sentence_highlight(rv["sentence_results"])
             else:
@@ -246,7 +409,23 @@ def main():
                 c1.metric("✅ Supported", report["supported_count"])
                 c2.metric("❌ Contradicted", report["contradicted_count"])
                 c3.metric("⚠️ Uncertain", report["neutral_count"])
-                st.metric("Hallucination Rate", f"{report['hallucination_rate']:.0%}")
+                
+                # Show calculation
+                total = report["total_sentences"]
+                contradicted = report["contradicted_count"]
+                uncertain = report["neutral_count"]
+                hallucinated = contradicted + uncertain
+                
+                st.markdown(f"""
+**Hallucination Calculation:**
+```
+Hallucination Rate = (Contradicted + Uncertain) / Total Sentences
+                   = ({contradicted} + {uncertain}) / {total}
+                   = {hallucinated} / {total}
+                   = {agent_hall_rate:.0%}
+```
+                """)
+                st.metric("Hallucination Rate", f"{agent_hall_rate:.0%}")
                 st.markdown("---")
                 render_sentence_highlight(report["sentence_results"])
             else:
@@ -282,6 +461,9 @@ def main():
             col_m2.metric("Multi-Agent Hallucination Rate", f"{agent_hall_rate:.0%}")
         else:
             st.success("✅ Neither system shows significant hallucination for this input.")
+
+        # Show methodology explanation
+        show_hallucination_methodology()
 
         # Additional tabs for detailed info
         if "error" not in result_agent:

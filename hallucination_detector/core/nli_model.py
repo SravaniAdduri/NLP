@@ -33,7 +33,7 @@ class NLIResult:
 class NLIModel:
     """
     Natural Language Inference model for hallucination detection.
-    Uses DeBERTa-v3 cross-encoder to classify premise-hypothesis pairs.
+    Uses DeBERTa-v3-base cross-encoder to classify premise-hypothesis pairs.
     
     Label mapping:
     - ENTAILMENT -> SUPPORTED (evidence supports the claim)
@@ -47,7 +47,7 @@ class NLIModel:
         2: EntailmentLabel.SUPPORTED,        # entailment
     }
 
-    def __init__(self, model_name: str = "cross-encoder/nli-deberta-v3-small", device: str = None):
+    def __init__(self, model_name: str = "cross-encoder/nli-deberta-v3-base", device: str = None):
         """
         Initialize the NLI model.
         

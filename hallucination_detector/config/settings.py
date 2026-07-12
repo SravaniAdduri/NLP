@@ -9,9 +9,9 @@ load_dotenv()
 @dataclass
 class ModelConfig:
     """Configuration for all ML models used in the system."""
-    embedding_model: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
-    reranker_model: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-    nli_model: str = os.getenv("NLI_MODEL", "cross-encoder/nli-deberta-v3-small")
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+    reranker_model: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-12-v2")
+    nli_model: str = os.getenv("NLI_MODEL", "cross-encoder/nli-deberta-v3-base")
     generation_model: str = os.getenv("GENERATION_MODEL", "microsoft/Phi-3-mini-4k-instruct")
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "mistral")

@@ -150,19 +150,31 @@ class ResponseGenerationAgent:
         citations = [{"id": i+1, "text": ev[:200], "marker": f"[{i+1}]"} for i, ev in enumerate(evidence)]
 
         # Extract and score all sentences from evidence
-        query_words = set(re.findall(r'\b\w{3,}\b', query.lower()))
+        # Detect summary-type queries
+        summary_keywords = {"summary", "summarize", "summarise", "overview", "brief", "gist", "outline"}
+        query_lower = query.lower()
+        is_summary_query = any(kw in query_lower for kw in summary_keywords)
+
+        query_words = set(re.findall(r'\b\w{3,}\b', query_lower))
         query_words -= {"what", "who", "when", "where", "why", "how", "which",
                         "does", "the", "are", "was", "were", "can", "could",
-                        "about", "tell", "explain", "describe", "main", "purpose"}
+                        "about", "tell", "explain", "describe", "main", "purpose",
+                        "summary", "summarize", "summarise", "give", "provide",
+                        "document", "file", "text", "overview", "brief"}
         query_entities = re.findall(r'\b[A-Z][a-z]+\b', query)
 
         scored: List[Tuple[str, float, int]] = []
 
         for ev_idx, ev_text in enumerate(evidence):
             ev_score = evidence_scores[ev_idx] if evidence_scores and ev_idx < len(evidence_scores) else 0.0
-            # Clean and split into sentences
+            # Clean and split into sentences (protect abbreviations and decimals)
             clean_text = re.sub(r'\s+', ' ', ev_text.replace('\n', ' ')).strip()
-            sentences = re.split(r'(?<=[.!?])\s+', clean_text)
+            protected = re.sub(r'(\d)\.(\d)', r'\1<DOT>\2', clean_text)
+            for abbr in ['Dr.', 'Mr.', 'Mrs.', 'Ms.', 'Prof.', 'Inc.', 'Ltd.',
+                         'vs.', 'etc.', 'e.g.', 'i.e.', 'Fig.', 'No.', 'Vol.']:
+                protected = protected.replace(abbr, abbr.replace('.', '<DOT>'))
+            raw_sents = re.split(r'(?<=[.!?])\s+', protected)
+            sentences = [s.replace('<DOT>', '.').strip() for s in raw_sents if s.strip()]
 
             for sent in sentences:
                 sent = sent.strip()
@@ -176,14 +188,26 @@ class ResponseGenerationAgent:
                 length_bonus = 0.1 if 8 <= len(words) <= 30 else 0.0
                 score = (ev_score * 0.3) + (overlap * 3.0) + entity_hit + length_bonus
 
+                # For summary queries, boost longer informative sentences
+                # since keyword overlap is not meaningful
+                if is_summary_query:
+                    info_bonus = min(len(words) / 25.0, 1.0) * 2.0
+                    score = (ev_score * 0.5) + info_bonus + length_bonus
+
                 scored.append((sent, score, ev_idx))
 
         if not scored:
-            # Fallback: show the best evidence passage cleaned up
-            clean = re.sub(r'\s+', ' ', evidence[0].replace('\n', ' ')).strip()
+            # Fallback: use the top evidence passages directly
+            fallback_parts = []
+            for i, ev in enumerate(evidence[:3]):
+                clean = re.sub(r'\s+', ' ', ev.replace('\n', ' ')).strip()
+                if clean:
+                    fallback_parts.append(clean[:400] + f" [{i+1}]")
+            response_text = "\n\n".join(fallback_parts) if fallback_parts else "No relevant information found."
             return GeneratedResponse(
-                response=clean[:600] + " [1]",
-                citations=citations[:1], num_evidence_used=1, generation_method="extractive",
+                response=response_text,
+                citations=citations[:3], num_evidence_used=min(3, len(evidence)),
+                generation_method="extractive",
             )
 
         # Sort by score, deduplicate, pick top sentences
@@ -192,8 +216,11 @@ class ResponseGenerationAgent:
         used_texts = []
         used_ev = set()
 
+        # For summary queries, select more sentences for broader coverage
+        max_sents = 8 if is_summary_query else 6
+
         for sent, sc, ev_idx in scored:
-            if len(selected) >= 6:
+            if len(selected) >= max_sents:
                 break
             if not any(self._sentence_similarity(sent, t) > 0.6 for t in used_texts):
                 selected.append((sent, ev_idx))
@@ -204,6 +231,10 @@ class ResponseGenerationAgent:
         # Group sentences by evidence source for coherent flow
         groups = {}
         for sent, ev_idx in selected:
+            # Ensure each sentence ends with proper punctuation
+            sent = sent.rstrip()
+            if sent and sent[-1] not in '.!?':
+                sent = sent.rstrip(',;:') + '.'
             groups.setdefault(ev_idx, []).append(sent)
 
         paragraphs = []
@@ -213,6 +244,11 @@ class ResponseGenerationAgent:
             paragraphs.append(paragraph)
 
         response_text = "\n\n".join(paragraphs)
+
+        if not response_text.strip():
+            # Final safety net
+            clean = re.sub(r'\s+', ' ', evidence[0].replace('\n', ' ')).strip()
+            response_text = clean[:600] + " [1]"
 
         return GeneratedResponse(
             response=response_text,

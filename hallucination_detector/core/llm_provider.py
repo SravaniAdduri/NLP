@@ -33,11 +33,11 @@ class HuggingFaceInferenceProvider(BaseLLMProvider):
 
     # Models known to work on free HF Inference API (in priority order)
     FREE_MODELS = [
-        "HuggingFaceH4/zephyr-7b-beta",
-        "mistralai/Mistral-7B-Instruct-v0.2",
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        "meta-llama/Meta-Llama-3-8B-Instruct",
         "microsoft/Phi-3-mini-4k-instruct",
+        "HuggingFaceH4/zephyr-7b-beta",
         "google/gemma-2-2b-it",
-        "tiiuae/falcon-7b-instruct",
     ]
 
     def __init__(self, model_name: str = None, hf_token: str = None):

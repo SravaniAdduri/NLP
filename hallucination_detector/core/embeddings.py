@@ -13,11 +13,11 @@ from loguru import logger
 class EmbeddingEngine:
     """
     Generates dense vector embeddings using Sentence Transformers.
-    Default model: BAAI/bge-small-en-v1.5 (free, high quality, fast).
-    Also supports: all-MiniLM-L6-v2, intfloat/e5-small-v2.
+    Default model: BAAI/bge-base-en-v1.5 (free, high quality, 768d).
+    Also supports: BAAI/bge-small-en-v1.5, all-MiniLM-L6-v2, intfloat/e5-small-v2.
     """
 
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5", device: str = None):
+    def __init__(self, model_name: str = "BAAI/bge-base-en-v1.5", device: str = None):
         """
         Initialize the embedding engine.
         
