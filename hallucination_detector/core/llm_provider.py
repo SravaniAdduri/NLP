@@ -28,68 +28,87 @@ class HuggingFaceInferenceProvider(BaseLLMProvider):
     """
     FREE cloud-based LLM using HuggingFace Inference API.
     No local GPU needed. Just requires a free HF token.
-    
-    Supported models (free tier):
-    - mistralai/Mistral-7B-Instruct-v0.3
-    - HuggingFaceH4/zephyr-7b-beta
-    - microsoft/Phi-3-mini-4k-instruct
-    - google/gemma-2-2b-it
+    Uses chat_completion endpoint which has the widest model support.
     """
 
-    def __init__(self, model_name: str = "mistralai/Mistral-7B-Instruct-v0.3", hf_token: str = None):
+    # Models known to work on free HF Inference API (in priority order)
+    FREE_MODELS = [
+        "HuggingFaceH4/zephyr-7b-beta",
+        "mistralai/Mistral-7B-Instruct-v0.2",
+        "microsoft/Phi-3-mini-4k-instruct",
+        "google/gemma-2-2b-it",
+        "tiiuae/falcon-7b-instruct",
+    ]
+
+    def __init__(self, model_name: str = None, hf_token: str = None):
         """
         Initialize the HuggingFace Inference API provider.
+        Automatically finds a working model if the specified one fails.
         
         Args:
-            model_name: Model to use via the Inference API.
-            hf_token: HuggingFace API token. Reads from HF_TOKEN env var if not provided.
+            model_name: Model to use. If None, auto-selects a working free model.
+            hf_token: HuggingFace API token.
         """
         from huggingface_hub import InferenceClient
 
         self.token = hf_token or os.getenv("HF_TOKEN", "")
-        self.model_name = model_name
+        self._InferenceClient = InferenceClient
 
         if not self.token:
             logger.warning("No HF_TOKEN set. Get a free token at https://huggingface.co/settings/tokens")
 
-        self.client = InferenceClient(model=model_name, token=self.token if self.token else None)
-        logger.info(f"HuggingFace Inference API initialized with model: {model_name}")
+        # Try the specified model first, then fall back to known working models
+        models_to_try = []
+        if model_name:
+            models_to_try.append(model_name)
+        models_to_try.extend(self.FREE_MODELS)
+
+        self.client = None
+        self.model_name = None
+
+        for model in models_to_try:
+            try:
+                client = InferenceClient(token=self.token if self.token else None)
+                # Test with a tiny request
+                test_messages = [{"role": "user", "content": "Hi"}]
+                resp = client.chat_completion(
+                    model=model,
+                    messages=test_messages,
+                    max_tokens=5,
+                )
+                if resp and resp.choices:
+                    self.client = client
+                    self.model_name = model
+                    logger.info(f"HuggingFace Inference API working with model: {model}")
+                    break
+            except Exception as e:
+                logger.debug(f"Model {model} not available: {e}")
+                continue
+
+        if not self.client:
+            # Create client anyway, will fail gracefully on generate
+            self.client = InferenceClient(token=self.token if self.token else None)
+            self.model_name = models_to_try[0] if models_to_try else "HuggingFaceH4/zephyr-7b-beta"
+            logger.warning(f"No working model found on HF Inference API. Will use extractive fallback.")
 
     def generate(self, prompt: str, max_tokens: int = 512, temperature: float = 0.3) -> str:
         """
         Generate text using HuggingFace Inference API (free).
-        
-        Args:
-            prompt: Input prompt text.
-            max_tokens: Maximum number of tokens to generate.
-            temperature: Sampling temperature.
-            
-        Returns:
-            Generated text string.
+        Uses chat_completion endpoint for widest compatibility.
         """
         try:
-            response = self.client.text_generation(
-                prompt,
-                max_new_tokens=max_tokens,
+            messages = [{"role": "user", "content": prompt}]
+            response = self.client.chat_completion(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=max_tokens,
                 temperature=max(temperature, 0.01),
-                do_sample=temperature > 0,
-                return_full_text=False,
             )
-            return response.strip()
+            return response.choices[0].message.content.strip()
         except Exception as e:
             logger.error(f"HF Inference API error: {e}")
-            # Try chat completion as fallback
-            try:
-                messages = [{"role": "user", "content": prompt}]
-                response = self.client.chat_completion(
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=max(temperature, 0.01),
-                )
-                return response.choices[0].message.content.strip()
-            except Exception as e2:
-                logger.error(f"HF Chat API also failed: {e2}")
-                return f"[Error: Could not generate response. Check HF_TOKEN. Details: {str(e)[:100]}]"
+            # Return None-like signal so caller can fall back to extractive
+            return ""
 
 
 class HuggingFaceLLMProvider(BaseLLMProvider):

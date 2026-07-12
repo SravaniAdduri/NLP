@@ -98,15 +98,20 @@ async def simple_rag_query(request: QueryRequest):
         ranked_scores = [r.relevance_score for r in ranking_result.ranked_evidence]
 
         # Step 3: Generate response
+        response_text = ""
         if orchestrator.response_agent.use_llm:
-            context = "\n\n".join(ranked_texts[:3])
-            response_text = orchestrator.response_agent.llm_provider.generate_with_context(query, context)
-        else:
-            # Simple RAG extractive: show top evidence passages directly
+            try:
+                context = "\n\n".join(ranked_texts[:3])
+                response_text = orchestrator.response_agent.llm_provider.generate_with_context(query, context)
+            except Exception as llm_err:
+                logger.warning(f"LLM generation failed: {llm_err}")
+                response_text = ""
+
+        # Fallback to extractive if LLM failed or not available
+        if not response_text or response_text.startswith("[Error"):
             if ranked_texts:
                 parts = []
                 for i, text in enumerate(ranked_texts[:3], 1):
-                    # Clean up and truncate
                     clean = text.replace('\n', ' ').strip()
                     if len(clean) > 400:
                         clean = clean[:400] + "..."

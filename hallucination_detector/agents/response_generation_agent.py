@@ -77,7 +77,12 @@ class ResponseGenerationAgent:
             )
 
         if self.use_llm:
-            return self._generate_with_llm(query, evidence, hallucination_report, verification_report)
+            result = self._generate_with_llm(query, evidence, hallucination_report, verification_report)
+            # If LLM returned empty or error, fall back to extractive
+            if not result.response or result.response.startswith("[Error"):
+                logger.warning("LLM response empty or errored, falling back to extractive mode")
+                return self._generate_extractive(query, evidence, evidence_scores, verification_report)
+            return result
         else:
             return self._generate_extractive(query, evidence, evidence_scores, verification_report)
 
