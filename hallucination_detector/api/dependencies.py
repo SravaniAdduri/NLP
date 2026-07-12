@@ -18,31 +18,14 @@ load_dotenv(_env_path, override=True)
 def get_orchestrator() -> MultiAgentOrchestrator:
     """
     Get or create the singleton orchestrator instance.
-    Starts with an EMPTY vector store — no persistent data.
+    Runs fully offline — no external API calls for generation.
+    Uses extractive mode with cross-encoder reranking for best results.
     """
     logger.info("Creating MultiAgentOrchestrator instance...")
     config = get_config()
 
-    hf_token = os.environ.get("HF_TOKEN", "")
-    use_llm = False
-
-    # Only enable LLM if token is valid and not placeholder
-    if hf_token and hf_token not in ("your_token_here", ""):
-        # Test if HF API is reachable
-        try:
-            import requests
-            resp = requests.get("https://huggingface.co/api/models", timeout=5)
-            if resp.status_code == 200:
-                use_llm = True
-                logger.info("HF API reachable. LLM generation enabled.")
-        except Exception:
-            logger.warning("HF API not reachable (network restricted). Using extractive mode.")
-
-    if not use_llm:
-        logger.info("Running in OFFLINE extractive mode (no external API needed).")
-
-    orchestrator = MultiAgentOrchestrator(config=config, use_llm=use_llm)
-    logger.info(f"LLM active: {orchestrator.response_agent.use_llm}")
-    logger.info("Ready. Upload a document to begin.")
+    # Always run offline — extractive mode with high-quality reranking
+    orchestrator = MultiAgentOrchestrator(config=config, use_llm=False)
+    logger.info("System ready (offline extractive mode). Upload a document to begin.")
 
     return orchestrator

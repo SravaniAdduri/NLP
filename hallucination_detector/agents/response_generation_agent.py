@@ -130,131 +130,94 @@ class ResponseGenerationAgent:
         verification_report: Optional[FactVerificationReport],
     ) -> GeneratedResponse:
         """
-        Generate response by intelligently extracting from evidence.
-        Uses sentence scoring based on query relevance and evidence quality.
+        Generate a clean, well-formatted response by extracting and reorganizing
+        the most relevant sentences from evidence.
         """
         if not evidence:
             return GeneratedResponse(
                 response="No relevant information found in the knowledge base.",
-                citations=[],
-                num_evidence_used=0,
-                generation_method="extractive",
+                citations=[], num_evidence_used=0, generation_method="extractive",
             )
 
-        # Check if evidence is actually relevant using scores
-        if evidence_scores and len(evidence_scores) > 0:
-            best_score = max(evidence_scores)
-            # Cross-encoder scores: > 0 means relevant, < -5 means not relevant
-            if best_score < -3:
-                return GeneratedResponse(
-                    response=f"The knowledge base does not contain sufficient information to answer: \"{query}\". Please upload relevant documents.",
-                    citations=[],
-                    num_evidence_used=0,
-                    generation_method="extractive_no_match",
-                )
+        # Check if evidence is relevant at all
+        if evidence_scores and max(evidence_scores) < -3:
+            return GeneratedResponse(
+                response=f"The uploaded document does not contain information about: \"{query}\".",
+                citations=[], num_evidence_used=0, generation_method="extractive_no_match",
+            )
 
-        # Build citations list
-        citations = []
-        for i, ev in enumerate(evidence):
-            citations.append({
-                "id": i + 1,
-                "text": ev[:200],
-                "marker": f"[{i+1}]",
-            })
+        # Build citations
+        citations = [{"id": i+1, "text": ev[:200], "marker": f"[{i+1}]"} for i, ev in enumerate(evidence)]
 
-        # Extract and score sentences from all evidence
-        query_lower = query.lower()
-        query_words = set(re.findall(r'\b\w{3,}\b', query_lower))
-        # Remove common question words from matching
+        # Extract and score all sentences from evidence
+        query_words = set(re.findall(r'\b\w{3,}\b', query.lower()))
         query_words -= {"what", "who", "when", "where", "why", "how", "which",
                         "does", "the", "are", "was", "were", "can", "could",
-                        "about", "tell", "explain", "describe", "main"}
+                        "about", "tell", "explain", "describe", "main", "purpose"}
+        query_entities = re.findall(r'\b[A-Z][a-z]+\b', query)
 
-        all_sentences: List[Tuple[str, float, int]] = []  # (sentence, score, evidence_idx)
+        scored: List[Tuple[str, float, int]] = []
 
         for ev_idx, ev_text in enumerate(evidence):
-            # Cross-encoder score for this evidence (higher = more relevant)
             ev_score = evidence_scores[ev_idx] if evidence_scores and ev_idx < len(evidence_scores) else 0.0
-
-            # Split into sentences
-            sentences = re.split(r'(?<=[.!?])\s+', ev_text.replace('\n', ' '))
+            # Clean and split into sentences
+            clean_text = re.sub(r'\s+', ' ', ev_text.replace('\n', ' ')).strip()
+            sentences = re.split(r'(?<=[.!?])\s+', clean_text)
 
             for sent in sentences:
                 sent = sent.strip()
-                if len(sent) < 15 or len(sent.split()) < 4:
+                words = sent.split()
+                if len(words) < 5 or len(sent) < 20:
                     continue
 
-                # Score this sentence
-                sent_lower = sent.lower()
-                sent_words = set(re.findall(r'\b\w{3,}\b', sent_lower))
+                sent_words = set(re.findall(r'\b\w{3,}\b', sent.lower()))
+                overlap = len(query_words & sent_words) / max(len(query_words), 1)
+                entity_hit = sum(1 for e in query_entities if e.lower() in sent.lower()) * 0.3
+                length_bonus = 0.1 if 8 <= len(words) <= 30 else 0.0
+                score = (ev_score * 0.3) + (overlap * 3.0) + entity_hit + length_bonus
 
-                # Word overlap with query
-                overlap = len(query_words & sent_words)
-                overlap_ratio = overlap / max(len(query_words), 1)
+                scored.append((sent, score, ev_idx))
 
-                # Boost for sentences containing query entities (capitalized words in query)
-                entity_bonus = 0
-                query_entities = re.findall(r'\b[A-Z][a-z]+\b', query)
-                for ent in query_entities:
-                    if ent.lower() in sent_lower:
-                        entity_bonus += 0.3
-
-                # Combine: cross-encoder score + word overlap + entity bonus
-                final_score = (ev_score * 0.4) + (overlap_ratio * 3.0) + entity_bonus
-
-                # Penalty for very short or very long sentences
-                word_count = len(sent.split())
-                if word_count < 6:
-                    final_score *= 0.5
-                elif word_count > 50:
-                    final_score *= 0.8
-
-                all_sentences.append((sent, final_score, ev_idx))
-
-        if not all_sentences:
-            # Fallback: just show the top evidence passage directly
+        if not scored:
+            # Fallback: show the best evidence passage cleaned up
+            clean = re.sub(r'\s+', ' ', evidence[0].replace('\n', ' ')).strip()
             return GeneratedResponse(
-                response=f"Here is the most relevant information found:\n\n{evidence[0][:500]} [1]",
-                citations=citations[:1],
-                num_evidence_used=1,
-                generation_method="extractive_fallback",
+                response=clean[:600] + " [1]",
+                citations=citations[:1], num_evidence_used=1, generation_method="extractive",
             )
 
-        # Sort by score and take the best unique sentences
-        all_sentences.sort(key=lambda x: x[1], reverse=True)
-
-        # Deduplicate similar sentences
+        # Sort by score, deduplicate, pick top sentences
+        scored.sort(key=lambda x: x[1], reverse=True)
         selected = []
-        selected_texts = []
-        used_ev_ids = set()
+        used_texts = []
+        used_ev = set()
 
-        for sent, score, ev_idx in all_sentences:
-            if len(selected) >= 5:
+        for sent, sc, ev_idx in scored:
+            if len(selected) >= 6:
                 break
-            # Check for near-duplicate
-            is_dup = False
-            for existing in selected_texts:
-                if self._sentence_similarity(sent, existing) > 0.7:
-                    is_dup = True
-                    break
-            if not is_dup:
-                selected.append((sent, score, ev_idx))
-                selected_texts.append(sent)
-                used_ev_ids.add(ev_idx)
+            if not any(self._sentence_similarity(sent, t) > 0.6 for t in used_texts):
+                selected.append((sent, ev_idx))
+                used_texts.append(sent)
+                used_ev.add(ev_idx)
 
-        # Build the response
-        response_lines = []
-        for sent, score, ev_idx in selected:
-            citation_id = ev_idx + 1
-            response_lines.append(f"• {sent} [{citation_id}]")
+        # Format as a clean, readable response
+        # Group sentences by evidence source for coherent flow
+        groups = {}
+        for sent, ev_idx in selected:
+            groups.setdefault(ev_idx, []).append(sent)
 
-        response_text = f"Based on the knowledge base, here is what I found regarding \"{query}\":\n\n"
-        response_text += "\n\n".join(response_lines)
+        paragraphs = []
+        for ev_idx in sorted(groups.keys()):
+            sents = groups[ev_idx]
+            paragraph = " ".join(sents) + f" [{ev_idx + 1}]"
+            paragraphs.append(paragraph)
+
+        response_text = "\n\n".join(paragraphs)
 
         return GeneratedResponse(
             response=response_text,
             citations=citations,
-            num_evidence_used=len(used_ev_ids),
+            num_evidence_used=len(used_ev),
             generation_method="extractive",
         )
 

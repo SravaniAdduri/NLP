@@ -97,28 +97,24 @@ async def simple_rag_query(request: QueryRequest):
         ranked_texts = [r.content for r in ranking_result.ranked_evidence]
         ranked_scores = [r.relevance_score for r in ranking_result.ranked_evidence]
 
-        # Step 3: Generate response
-        response_text = ""
-        if orchestrator.response_agent.use_llm:
-            try:
-                context = "\n\n".join(ranked_texts[:3])
-                response_text = orchestrator.response_agent.llm_provider.generate_with_context(query, context)
-            except Exception as llm_err:
-                logger.warning(f"LLM generation failed: {llm_err}")
-                response_text = ""
-
-        # Fallback to extractive if LLM failed or not available
-        if not response_text or response_text.startswith("[Error"):
-            if ranked_texts:
-                parts = []
-                for i, text in enumerate(ranked_texts[:3], 1):
-                    clean = text.replace('\n', ' ').strip()
-                    if len(clean) > 400:
-                        clean = clean[:400] + "..."
-                    parts.append(f"[{i}] {clean}")
-                response_text = "Here is what the document says:\n\n" + "\n\n".join(parts)
-            else:
-                response_text = "No relevant information found in the uploaded document."
+        # Step 3: Build clean extractive response from top evidence
+        if ranked_texts:
+            import re as _re
+            parts = []
+            for i, text in enumerate(ranked_texts[:3], 1):
+                # Clean whitespace and newlines
+                clean = _re.sub(r'\s+', ' ', text.replace('\n', ' ')).strip()
+                # Split into sentences and take the most meaningful ones
+                sents = [s.strip() for s in _re.split(r'(?<=[.!?])\s+', clean) if len(s.strip()) > 20]
+                if sents:
+                    # Take up to 3 best sentences per evidence
+                    passage = " ".join(sents[:3])
+                    if len(passage) > 400:
+                        passage = passage[:400] + "..."
+                    parts.append(f"{passage} [{i}]")
+            response_text = "\n\n".join(parts) if parts else "No relevant information found."
+        else:
+            response_text = "No relevant information found in the uploaded document."
 
         latency = (time.perf_counter() - start) * 1000
 
@@ -133,6 +129,57 @@ async def simple_rag_query(request: QueryRequest):
 
     except Exception as e:
         logger.error(f"Simple RAG failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/verify_response")
+async def verify_response(request: VerificationRequest):
+    """
+    Verify any text against the knowledge base for hallucinations.
+    Used to run hallucination detection on the Simple RAG response.
+    """
+    orchestrator = get_orchestrator()
+
+    if orchestrator.index_size == 0:
+        raise HTTPException(status_code=400, detail="No documents in knowledge base.")
+
+    try:
+        evidence = request.evidence
+        text_to_verify = request.text
+
+        # If no evidence provided, retrieve from vector store
+        if not evidence:
+            result = orchestrator.retrieval_agent.retrieve(text_to_verify)
+            from core.vector_store import SearchResult
+            search_results = [
+                SearchResult(content=r.content, score=r.score, source=r.source, chunk_id=i, metadata={})
+                for i, r in enumerate(result.results)
+            ]
+            ranking_result = orchestrator.ranking_agent.rank(text_to_verify, search_results)
+            evidence = [r.content for r in ranking_result.ranked_evidence]
+
+        # Run hallucination detection
+        report = orchestrator.hallucination_agent.detect(text_to_verify, evidence)
+
+        return {
+            "hallucination_rate": report.hallucination_rate,
+            "supported_count": report.supported_count,
+            "contradicted_count": report.contradicted_count,
+            "neutral_count": report.neutral_count,
+            "total_sentences": report.total_sentences,
+            "sentence_results": [
+                {
+                    "sentence": r.sentence,
+                    "label": r.label,
+                    "confidence": r.confidence,
+                    "supporting_evidence": r.supporting_evidence,
+                    "scores": r.scores,
+                }
+                for r in report.sentence_results
+            ],
+        }
+    except Exception as e:
+        logger.error(f"Verification failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
