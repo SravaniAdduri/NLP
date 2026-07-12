@@ -99,7 +99,7 @@ def render_sidebar():
         else:
             st.warning(f"⚠️ {health['message']}")
 
-        st.divider()
+        st.markdown("---")
 
         # File upload
         st.subheader("Upload Documents")
@@ -116,7 +116,7 @@ def render_sidebar():
                 else:
                     st.success(f"✅ {result['message']} ({result['num_chunks']} chunks)")
 
-        st.divider()
+        st.markdown("---")
 
         # Text input
         st.subheader("Add Text")
@@ -130,7 +130,7 @@ def render_sidebar():
                 else:
                     st.success(f"✅ Added {result['num_chunks']} chunks")
 
-        st.divider()
+        st.markdown("---")
 
         # URL input
         st.subheader("Add Web Page")
@@ -251,7 +251,7 @@ def render_main():
         with tab2:
             st.subheader("Hallucination Analysis")
             report = result.get("hallucination_report")
-            if report:
+            if report and report.get("sentence_results"):
                 # Summary metrics
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -263,11 +263,11 @@ def render_main():
 
                 st.metric("Hallucination Rate", f"{report['hallucination_rate']:.2%}")
 
-                st.divider()
+                st.markdown("---")
                 st.subheader("Sentence-Level Analysis")
                 render_hallucination_highlight(report.get("sentence_results", []))
             else:
-                st.info("No LLM response provided for hallucination analysis.")
+                st.info("💡 To use hallucination detection, expand the 'Optional: Provide an LLM response to verify' section above and paste a response you want to fact-check against the knowledge base.")
 
         with tab3:
             st.subheader("Retrieved Evidence")
@@ -300,11 +300,11 @@ def render_main():
                             for ev in claim["supporting_evidence"]:
                                 st.text(ev[:200])
             else:
-                st.info("No claims to verify.")
+                st.info("💡 To use fact verification, provide an LLM response to verify in the input section above.")
 
             vr = result.get("verification_report")
             if vr:
-                st.divider()
+                st.markdown("---")
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Verified", vr["verified_count"])
@@ -319,7 +319,7 @@ def render_main():
             if metrics:
                 render_metrics(metrics)
             else:
-                st.info("No metrics available.")
+                st.info("Metrics will be available after hallucination analysis is performed.")
 
         # Show errors if any
         if result.get("errors"):

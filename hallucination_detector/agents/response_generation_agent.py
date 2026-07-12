@@ -122,32 +122,59 @@ class ResponseGenerationAgent:
     ) -> GeneratedResponse:
         """
         Generate response by extracting and combining relevant evidence.
-        Used when no LLM is available.
+        Used when no LLM is available. Selects the most relevant sentences
+        from evidence to construct a coherent answer.
         """
-        # Build response from verified evidence
-        response_parts = []
-        citations = []
+        if not evidence:
+            return GeneratedResponse(
+                response="No verified information available for this query.",
+                citations=[],
+                num_evidence_used=0,
+                generation_method="extractive",
+            )
+
+        # Extract key sentences from evidence that are most relevant to the query
+        query_words = set(query.lower().split())
+        scored_sentences = []
 
         for i, ev in enumerate(evidence):
-            # Truncate long passages
-            truncated = ev if len(ev) <= 300 else ev[:300] + "..."
-            response_parts.append(f"{truncated} [{i+1}]")
+            sentences = [s.strip() for s in ev.replace('\n', ' ').split('.') if s.strip() and len(s.strip()) > 20]
+            for sentence in sentences:
+                sentence_words = set(sentence.lower().split())
+                overlap = len(query_words & sentence_words)
+                scored_sentences.append((sentence.strip() + '.', overlap, i))
+
+        # Sort by relevance (word overlap) and pick top sentences
+        scored_sentences.sort(key=lambda x: x[1], reverse=True)
+        selected = scored_sentences[:5]  # Take top 5 most relevant sentences
+
+        # Build response with citations
+        response_parts = []
+        citations = []
+        used_evidence_ids = set()
+
+        for sentence, score, ev_idx in selected:
+            citation_id = ev_idx + 1
+            used_evidence_ids.add(ev_idx)
+            response_parts.append(f"{sentence} [{citation_id}]")
+
+        for i, ev in enumerate(evidence):
             citations.append({
                 "id": i + 1,
                 "text": ev[:200],
                 "marker": f"[{i+1}]",
             })
 
-        # Combine evidence into a coherent response
         if response_parts:
-            response_text = f"Based on the available evidence:\n\n" + "\n\n".join(response_parts)
+            response_text = f"Based on the available evidence for \"{query}\":\n\n" + "\n\n".join(response_parts)
         else:
-            response_text = "No verified information available for this query."
+            # Fallback: just show the most relevant evidence passage
+            response_text = f"Relevant information found:\n\n{evidence[0][:500]} [1]"
 
         return GeneratedResponse(
             response=response_text,
             citations=citations,
-            num_evidence_used=len(evidence),
+            num_evidence_used=len(used_evidence_ids),
             generation_method="extractive",
         )
 

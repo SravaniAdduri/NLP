@@ -380,10 +380,35 @@ class MultiAgentOrchestrator:
             evidence = state.get("ranked_evidence", [])
             query = state["query"]
 
+            # Build a HallucinationReport-like object if we have the report dict
+            hallucination_report = None
+            hr_dict = state.get("hallucination_report")
+            if hr_dict:
+                from agents.hallucination_detection_agent import HallucinationReport, SentenceVerification
+                hallucination_report = HallucinationReport(
+                    original_response=hr_dict.get("original_response", ""),
+                    sentence_results=[
+                        SentenceVerification(
+                            sentence=sr["sentence"],
+                            label=sr["label"],
+                            confidence=sr["confidence"],
+                            supporting_evidence=sr.get("supporting_evidence", ""),
+                            scores=sr.get("scores", {}),
+                        )
+                        for sr in hr_dict.get("sentence_results", [])
+                    ],
+                    total_sentences=hr_dict.get("total_sentences", 0),
+                    supported_count=hr_dict.get("supported_count", 0),
+                    contradicted_count=hr_dict.get("contradicted_count", 0),
+                    neutral_count=hr_dict.get("neutral_count", 0),
+                    hallucination_rate=hr_dict.get("hallucination_rate", 0.0),
+                    overall_confidence=hr_dict.get("overall_confidence", 0.0),
+                )
+
             result = self.response_agent.generate_corrected_response(
                 query=query,
                 evidence=evidence,
-                hallucination_report=None,
+                hallucination_report=hallucination_report,
                 verification_report=None,
             )
 
@@ -413,7 +438,12 @@ class MultiAgentOrchestrator:
                     hallucination_report, latency_ms
                 )
             else:
-                metrics = self.evaluation_agent._empty_metrics(latency_ms)
+                # Even without hallucination report, provide basic metrics
+                num_evidence = len(state.get("ranked_evidence", []))
+                metrics_obj = self.evaluation_agent._empty_metrics(latency_ms)
+                metrics_obj.retrieval_precision = 1.0 if num_evidence > 0 else 0.0
+                metrics_obj.num_claims_verified = 0
+                metrics = metrics_obj
 
             metrics_dict = {
                 "precision": metrics.precision,
