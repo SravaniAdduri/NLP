@@ -97,6 +97,15 @@ def simple_rag_query(query: str) -> dict:
         return {"error": str(e)}
 
 
+def get_system_status() -> dict:
+    """Get detailed system status."""
+    try:
+        response = requests.get(f"{API_BASE_URL}/status", timeout=5)
+        return response.json()
+    except Exception:
+        return {"llm_active": False, "llm_provider": "unknown", "index_size": 0}
+
+
 def render_sidebar():
     """Render the sidebar with system status and document upload."""
     with st.sidebar:
@@ -106,6 +115,13 @@ def render_sidebar():
         health = check_api_health()
         if health["status"] == "healthy":
             st.success(f"✅ API Online | {health['index_size']} chunks indexed")
+
+            # Show LLM status
+            status = get_system_status()
+            if status.get("llm_active"):
+                st.success(f"🤖 LLM: **{status.get('llm_provider', 'active')}**")
+            else:
+                st.warning("⚠️ LLM: OFF (extractive mode)\nSet HF_TOKEN in .env for better responses")
         elif health["status"] == "offline":
             st.error("❌ Backend API offline. Start with: `uvicorn api.main:app --reload`")
             return

@@ -52,6 +52,20 @@ async def health_check():
         )
 
 
+@router.get("/status")
+async def system_status():
+    """Get detailed system status including LLM configuration."""
+    orchestrator = get_orchestrator()
+    return {
+        "llm_active": orchestrator.response_agent.use_llm,
+        "llm_provider": orchestrator.response_agent.llm_provider.provider_name if orchestrator.response_agent.use_llm else "none",
+        "index_size": orchestrator.index_size,
+        "embedding_model": orchestrator.config.models.embedding_model,
+        "reranker_model": orchestrator.config.models.reranker_model,
+        "nli_model": orchestrator.config.models.nli_model,
+    }
+
+
 @router.post("/simple_rag")
 async def simple_rag_query(request: QueryRequest):
     """
@@ -246,11 +260,11 @@ async def upload_file(file: UploadFile = File(...)):
             tmp.write(content)
             tmp_path = tmp.name
 
+        # Clear old data — only use the current document
+        orchestrator.retrieval_agent.vector_store.clear()
+
         # Ingest the document
         num_chunks = orchestrator.ingest_document(tmp_path)
-
-        # Save the updated index
-        orchestrator.save_index()
 
         # Cleanup temp file
         os.unlink(tmp_path)
@@ -272,8 +286,10 @@ async def upload_text(request: UploadRequest):
     orchestrator = get_orchestrator()
 
     try:
+        # Clear old data — only use current input
+        orchestrator.retrieval_agent.vector_store.clear()
+
         num_chunks = orchestrator.ingest_text(request.text, request.source_name)
-        orchestrator.save_index()
 
         return UploadResponse(
             message=f"Successfully ingested text from '{request.source_name}'",
@@ -292,8 +308,10 @@ async def upload_url(request: URLIngestRequest):
     orchestrator = get_orchestrator()
 
     try:
+        # Clear old data — only use current URL
+        orchestrator.retrieval_agent.vector_store.clear()
+
         num_chunks = orchestrator.ingest_url(request.url)
-        orchestrator.save_index()
 
         return UploadResponse(
             message=f"Successfully ingested URL: {request.url}",
