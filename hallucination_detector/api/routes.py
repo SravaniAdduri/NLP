@@ -97,18 +97,23 @@ async def simple_rag_query(request: QueryRequest):
         ranked_texts = [r.content for r in ranking_result.ranked_evidence]
         ranked_scores = [r.relevance_score for r in ranking_result.ranked_evidence]
 
-        # Step 3: Generate response (simple context concatenation)
+        # Step 3: Generate response
         if orchestrator.response_agent.use_llm:
             context = "\n\n".join(ranked_texts[:3])
             response_text = orchestrator.response_agent.llm_provider.generate_with_context(query, context)
         else:
-            # Extractive: just show top evidence
+            # Simple RAG extractive: show top evidence passages directly
             if ranked_texts:
-                response_text = f"Based on the knowledge base:\n\n{ranked_texts[0]}"
-                if len(ranked_texts) > 1:
-                    response_text += f"\n\n{ranked_texts[1]}"
+                parts = []
+                for i, text in enumerate(ranked_texts[:3], 1):
+                    # Clean up and truncate
+                    clean = text.replace('\n', ' ').strip()
+                    if len(clean) > 400:
+                        clean = clean[:400] + "..."
+                    parts.append(f"[{i}] {clean}")
+                response_text = "Here is what the document says:\n\n" + "\n\n".join(parts)
             else:
-                response_text = "No relevant information found."
+                response_text = "No relevant information found in the uploaded document."
 
         latency = (time.perf_counter() - start) * 1000
 

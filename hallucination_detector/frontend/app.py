@@ -131,38 +131,38 @@ def render_sidebar():
         st.markdown("---")
 
         # File upload
-        st.subheader("Upload Documents")
+        st.subheader("📄 Upload Document")
+        st.caption("Supported: PDF, TXT, MD, HTML (any size)")
         uploaded_file = st.file_uploader(
             "Choose a file",
             type=["pdf", "txt", "md", "html"],
-            help="Upload PDF, text, markdown, or HTML files",
+            help="Upload PDF, text, markdown, or HTML files. File is processed into chunks for search.",
         )
-        if uploaded_file and st.button("📤 Upload File", key="upload_file"):
-            with st.spinner("Processing document..."):
-                result = upload_file(uploaded_file)
-                if "error" in result:
-                    st.error(result["error"])
-                else:
-                    st.success(f"✅ {result['message']} ({result['num_chunks']} chunks)")
+        if uploaded_file:
+            st.info(f"Selected: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
+            if st.button("📤 Upload & Index File", key="upload_file", type="primary"):
+                with st.spinner(f"Processing {uploaded_file.name}..."):
+                    result = upload_file(uploaded_file)
+                    if "error" in result:
+                        st.error(f"Upload failed: {result['error']}")
+                    else:
+                        st.success(f"✅ Indexed! {result['num_chunks']} chunks created from {uploaded_file.name}")
+                        st.balloons()
 
         st.markdown("---")
 
         # Text input
-        st.subheader("Add Text")
+        st.subheader("📝 Paste Text")
         text_input = st.text_area("Paste text content:", height=100, key="text_input")
-        source_name = st.text_input("Source name:", value="manual_input", key="source_name")
-        if text_input and st.button("📝 Add Text", key="add_text"):
-            with st.spinner("Ingesting text..."):
-                result = upload_text(text_input, source_name)
+        if text_input and st.button("📝 Index Text", key="add_text"):
+            with st.spinner("Indexing text..."):
+                result = upload_text(text_input, "pasted_text")
                 if "error" in result:
                     st.error(result["error"])
                 else:
-                    st.success(f"✅ Added {result['num_chunks']} chunks")
+                    st.success(f"✅ Indexed! {result['num_chunks']} chunks created")
 
         st.markdown("---")
-
-        # URL input
-        st.subheader("Add Web Page")
         url_input = st.text_input("Enter URL:", key="url_input")
         if url_input and st.button("🌐 Ingest URL", key="ingest_url"):
             with st.spinner("Fetching and processing URL..."):
@@ -233,16 +233,23 @@ def render_main():
     st.title("🔍 Hallucination Detection & Fact Verification")
     st.caption("Multi-Agent RAG Framework — Compare Simple RAG vs Multi-Agent responses")
 
+    # Check if documents are loaded
+    health = check_api_health()
+    has_docs = health.get("index_size", 0) > 0
+
+    if not has_docs:
+        st.warning("⚠️ **No documents indexed yet.** Upload a document using the sidebar first, then ask questions.")
+
     # Query input
     st.subheader("Ask a Question")
     query = st.text_input(
         "Your question:",
-        placeholder="e.g., What are the main causes of climate change?",
+        placeholder="e.g., What is the main purpose of this document?",
         key="main_query",
     )
 
     # Get Answer button
-    if st.button("🚀 Get Answer (Side-by-Side Comparison)", type="primary", disabled=not query):
+    if st.button("🚀 Get Answer (Side-by-Side Comparison)", type="primary", disabled=(not query or not has_docs)):
         st.markdown("---")
 
         # Run both models in parallel display

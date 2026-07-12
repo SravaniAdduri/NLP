@@ -24,17 +24,25 @@ def get_orchestrator() -> MultiAgentOrchestrator:
     config = get_config()
 
     hf_token = os.environ.get("HF_TOKEN", "")
-    # Ignore placeholder values
-    if hf_token in ("", "your_token_here"):
-        use_llm = False
-        logger.warning("HF_TOKEN not set or is placeholder. Using extractive mode.")
-        logger.warning("Set a real HF_TOKEN in .env for proper LLM responses.")
-    else:
-        use_llm = True
-        logger.info(f"HF_TOKEN found. LLM generation enabled.")
+    use_llm = False
+
+    # Only enable LLM if token is valid and not placeholder
+    if hf_token and hf_token not in ("your_token_here", ""):
+        # Test if HF API is reachable
+        try:
+            import requests
+            resp = requests.get("https://huggingface.co/api/models", timeout=5)
+            if resp.status_code == 200:
+                use_llm = True
+                logger.info("HF API reachable. LLM generation enabled.")
+        except Exception:
+            logger.warning("HF API not reachable (network restricted). Using extractive mode.")
+
+    if not use_llm:
+        logger.info("Running in OFFLINE extractive mode (no external API needed).")
 
     orchestrator = MultiAgentOrchestrator(config=config, use_llm=use_llm)
     logger.info(f"LLM active: {orchestrator.response_agent.use_llm}")
-    logger.info("Starting with empty vector store. Upload a document to begin.")
+    logger.info("Ready. Upload a document to begin.")
 
     return orchestrator
