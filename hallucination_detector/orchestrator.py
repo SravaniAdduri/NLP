@@ -22,6 +22,7 @@ Graph Edges:
 """
 
 import time
+import os
 from typing import TypedDict, List, Optional, Annotated
 from dataclasses import dataclass, field
 
@@ -151,14 +152,19 @@ class MultiAgentOrchestrator:
             nli_model=self.nli_model,
         )
 
-        # Response generation (optional LLM)
+        # Response generation - use HuggingFace Inference API (free cloud LLM)
         llm_provider = None
         if use_llm:
             try:
+                hf_token = os.environ.get("HF_TOKEN", "")
+                llm_provider_name = os.environ.get("LLM_PROVIDER", "huggingface_inference")
+                llm_model = os.environ.get("LLM_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
+
                 llm_provider = LLMProvider(
-                    provider="ollama",
-                    model_name=self.config.models.ollama_model,
+                    provider=llm_provider_name,
+                    model_name=llm_model,
                     ollama_base_url=self.config.models.ollama_base_url,
+                    hf_token=hf_token,
                 )
             except Exception as e:
                 logger.warning(f"LLM provider failed to initialize: {e}")

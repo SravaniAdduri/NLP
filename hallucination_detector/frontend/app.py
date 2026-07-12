@@ -72,7 +72,7 @@ def upload_url(url: str) -> dict:
 
 
 def process_query(query: str, llm_response: str = "") -> dict:
-    """Send a query to the backend for processing."""
+    """Send a query to the multi-agent pipeline backend."""
     try:
         payload = {"query": query, "llm_response": llm_response}
         response = requests.post(f"{API_BASE_URL}/query", json=payload, timeout=120)
@@ -80,6 +80,19 @@ def process_query(query: str, llm_response: str = "") -> dict:
         return response.json()
     except requests.exceptions.HTTPError as e:
         return {"error": f"Query failed: {e.response.text}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def simple_rag_query(query: str) -> dict:
+    """Send a query to the simple RAG endpoint."""
+    try:
+        payload = {"query": query, "llm_response": ""}
+        response = requests.post(f"{API_BASE_URL}/simple_rag", json=payload, timeout=120)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.HTTPError as e:
+        return {"error": f"Simple RAG failed: {e.response.text}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -202,7 +215,7 @@ def render_metrics(metrics: dict):
 def render_main():
     """Render the main content area."""
     st.title("🔍 Hallucination Detection & Fact Verification")
-    st.caption("Multi-Agent RAG Framework for detecting hallucinations in LLM responses")
+    st.caption("Multi-Agent RAG Framework — Compare Simple RAG vs Multi-Agent responses")
 
     # Query input
     st.subheader("Ask a Question")
@@ -212,69 +225,77 @@ def render_main():
         key="main_query",
     )
 
-    # Two columns for the two actions
-    col_ask, col_analyze = st.columns(2)
-
-    with col_ask:
-        ask_clicked = st.button("💬 Get Answer", type="secondary", disabled=not query)
-
-    with col_analyze:
-        analyze_clicked = st.button("🚀 Analyze for Hallucinations", type="primary", disabled=not query)
-
-    # LLM response input (only shown when analyze is the intent)
-    llm_response = ""
-    if analyze_clicked or st.session_state.get("show_llm_input", False):
-        st.session_state["show_llm_input"] = True
+    # Get Answer button
+    if st.button("🚀 Get Answer (Side-by-Side Comparison)", type="primary", disabled=not query):
         st.markdown("---")
-        st.subheader("Paste an LLM Response to Verify")
-        llm_response = st.text_area(
-            "LLM Response:",
-            placeholder="Paste the LLM-generated response you want to fact-check...",
-            height=150,
-            key="llm_response",
-        )
-        run_analysis = st.button("🔍 Run Full Analysis", type="primary", disabled=not (query and llm_response))
-    else:
-        run_analysis = False
 
-    # --- MODE 1: Simple Q&A (Get Answer) ---
-    if ask_clicked and query:
-        st.session_state["show_llm_input"] = False
-        with st.spinner("Retrieving answer from knowledge base..."):
-            result = process_query(query, "")
+        # Run both models in parallel display
+        col_rag, col_agent = st.columns(2)
 
-        if "error" in result:
-            st.error(f"Error: {result['error']}")
-            return
+        # --- LEFT: Simple RAG ---
+        with col_rag:
+            st.subheader("📄 Simple RAG")
+            with st.spinner("Running Simple RAG..."):
+                rag_result = simple_rag_query(query)
 
-        st.markdown("---")
-        st.subheader("📋 Answer")
-        st.write(result.get("corrected_response", "No response generated."))
+            if "error" in rag_result:
+                st.error(rag_result["error"])
+            else:
+                st.markdown(f"**Response:**")
+                st.info(rag_result.get("response", "No response."))
+                st.caption(f"⏱️ Latency: {rag_result.get('latency_ms', 0):.0f} ms")
 
-        if result.get("citations"):
-            with st.expander("📚 Sources"):
-                for citation in result["citations"]:
-                    st.markdown(f"**[{citation['id']}]** {citation['text']}")
+                with st.expander("📚 Evidence Used"):
+                    for i, ev in enumerate(rag_result.get("evidence", [])[:3], 1):
+                        score = rag_result.get("evidence_scores", [])[i-1] if i-1 < len(rag_result.get("evidence_scores", [])) else 0
+                        st.markdown(f"**[{i}]** (score: {score:.2f})")
+                        st.text(ev[:250])
+                        st.markdown("---")
 
-        if result.get("ranked_evidence"):
-            with st.expander(f"📖 Retrieved Evidence ({len(result['ranked_evidence'])} passages)"):
-                for i, ev in enumerate(result["ranked_evidence"], 1):
-                    st.markdown(f"**[{i}]** {ev[:300]}{'...' if len(ev) > 300 else ''}")
-                    st.markdown("---")
+        # --- RIGHT: Multi-Agent ---
+        with col_agent:
+            st.subheader("🤖 Multi-Agent Pipeline")
+            with st.spinner("Running Multi-Agent Pipeline..."):
+                agent_result = process_query(query, "")
 
-        if result.get("metrics") and result["metrics"].get("latency_ms"):
-            st.caption(f"⏱️ Response time: {result['metrics']['latency_ms']:.0f} ms")
+            if "error" in agent_result:
+                st.error(agent_result["error"])
+            else:
+                st.markdown(f"**Response:**")
+                st.success(agent_result.get("corrected_response", "No response."))
+                latency = agent_result.get("metrics", {}).get("latency_ms", 0) if agent_result.get("metrics") else 0
+                st.caption(f"⏱️ Latency: {latency:.0f} ms")
 
-    # --- MODE 2: Full Hallucination Analysis ---
-    if run_analysis and query and llm_response:
-        with st.spinner("Running full multi-agent analysis pipeline..."):
+                with st.expander("📚 Evidence Used"):
+                    for i, ev in enumerate(agent_result.get("ranked_evidence", [])[:3], 1):
+                        st.markdown(f"**[{i}]**")
+                        st.text(ev[:250])
+                        st.markdown("---")
+
+                if agent_result.get("citations"):
+                    with st.expander("📖 Citations"):
+                        for c in agent_result["citations"]:
+                            st.markdown(f"**[{c['id']}]** {c['text']}")
+
+    # --- Full Hallucination Analysis Section ---
+    st.markdown("---")
+    st.subheader("🔬 Full Hallucination Analysis")
+    st.caption("Paste an LLM-generated response to verify it against the knowledge base")
+
+    llm_response = st.text_area(
+        "LLM Response to verify:",
+        placeholder="Paste any AI-generated response here to check for hallucinations...",
+        height=120,
+        key="llm_response",
+    )
+
+    if st.button("🔍 Run Hallucination Analysis", disabled=not (query and llm_response)):
+        with st.spinner("Running full multi-agent analysis..."):
             result = process_query(query, llm_response)
 
         if "error" in result:
             st.error(f"Error: {result['error']}")
             return
-
-        st.markdown("---")
 
         # Display results in tabs
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -286,11 +307,13 @@ def render_main():
         ])
 
         with tab1:
-            st.subheader("Original LLM Response")
-            st.warning(llm_response)
-
-            st.subheader("Corrected Response")
-            st.success(result.get("corrected_response", "No response generated."))
+            col_orig, col_corrected = st.columns(2)
+            with col_orig:
+                st.markdown("**❌ Original (with potential hallucinations):**")
+                st.warning(llm_response)
+            with col_corrected:
+                st.markdown("**✅ Corrected (grounded in evidence):**")
+                st.success(result.get("corrected_response", "No response generated."))
 
             if result.get("citations"):
                 st.subheader("Citations")
@@ -301,22 +324,21 @@ def render_main():
             st.subheader("Hallucination Analysis")
             report = result.get("hallucination_report")
             if report and report.get("sentence_results"):
-                # Summary metrics
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.metric("Supported", report["supported_count"])
+                    st.metric("✅ Supported", report["supported_count"])
                 with col2:
-                    st.metric("Contradicted", report["contradicted_count"])
+                    st.metric("❌ Contradicted", report["contradicted_count"])
                 with col3:
-                    st.metric("Not Enough Evidence", report["neutral_count"])
-
-                st.metric("Hallucination Rate", f"{report['hallucination_rate']:.2%}")
+                    st.metric("⚠️ Uncertain", report["neutral_count"])
+                with col4:
+                    st.metric("Hallucination Rate", f"{report['hallucination_rate']:.0%}")
 
                 st.markdown("---")
                 st.subheader("Sentence-Level Analysis")
                 render_hallucination_highlight(report.get("sentence_results", []))
             else:
-                st.warning("Could not perform hallucination analysis. Ensure documents are uploaded to the knowledge base.")
+                st.warning("Could not perform hallucination analysis.")
 
         with tab3:
             st.subheader("Retrieved Evidence")
@@ -326,30 +348,22 @@ def render_main():
                     with st.expander(f"Evidence [{i}]: {ev[:80]}..."):
                         st.write(ev)
             else:
-                st.warning("No evidence retrieved. Upload documents to the knowledge base first.")
+                st.warning("No evidence retrieved.")
 
         with tab4:
             st.subheader("Fact Verification")
             claims = result.get("verified_claims", [])
             if claims:
                 for claim in claims:
-                    verdict_icon = {
-                        "VERIFIED": "✅",
-                        "REFUTED": "❌",
-                        "UNVERIFIABLE": "⚠️",
-                    }.get(claim["verdict"], "❓")
-
-                    st.markdown(
-                        f"{verdict_icon} **{claim['verdict']}** "
-                        f"(confidence: {claim['confidence']:.2f}): {claim['claim']}"
-                    )
+                    verdict_icon = {"VERIFIED": "✅", "REFUTED": "❌", "UNVERIFIABLE": "⚠️"}.get(claim["verdict"], "❓")
+                    st.markdown(f"{verdict_icon} **{claim['verdict']}** (confidence: {claim['confidence']:.2f}): {claim['claim']}")
 
                     if claim.get("supporting_evidence"):
                         with st.expander("Supporting evidence"):
                             for ev in claim["supporting_evidence"]:
                                 st.text(ev[:200])
             else:
-                st.info("No verifiable claims found in the LLM response.")
+                st.info("No verifiable claims found.")
 
             vr = result.get("verification_report")
             if vr:
@@ -360,7 +374,7 @@ def render_main():
                 with col2:
                     st.metric("Refuted", vr["refuted_count"])
                 with col3:
-                    st.metric("Overall Accuracy", f"{vr['overall_accuracy']:.2%}")
+                    st.metric("Accuracy", f"{vr['overall_accuracy']:.0%}")
 
         with tab5:
             st.subheader("Evaluation Metrics")
@@ -370,9 +384,8 @@ def render_main():
             else:
                 st.info("Metrics unavailable.")
 
-        # Show errors if any
         if result.get("errors"):
-            with st.expander("⚠️ Warnings/Errors"):
+            with st.expander("⚠️ Warnings"):
                 for error in result["errors"]:
                     st.warning(error)
 

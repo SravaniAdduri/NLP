@@ -18,7 +18,14 @@ def get_orchestrator() -> MultiAgentOrchestrator:
     """
     logger.info("Creating MultiAgentOrchestrator instance...")
     config = get_config()
-    orchestrator = MultiAgentOrchestrator(config=config, use_llm=False)
+
+    # Enable LLM if HF_TOKEN is set
+    import os
+    use_llm = bool(os.environ.get("HF_TOKEN", ""))
+    if not use_llm:
+        logger.warning("HF_TOKEN not set. Using extractive mode. Set HF_TOKEN in .env for LLM responses.")
+
+    orchestrator = MultiAgentOrchestrator(config=config, use_llm=use_llm)
 
     # Try to load existing index
     if orchestrator.load_index():

@@ -52,6 +52,66 @@ async def health_check():
         )
 
 
+@router.post("/simple_rag")
+async def simple_rag_query(request: QueryRequest):
+    """
+    Simple RAG: Retrieve evidence and generate a direct answer.
+    No hallucination detection or fact verification.
+    This is the baseline RAG for comparison.
+    """
+    orchestrator = get_orchestrator()
+
+    if orchestrator.index_size == 0:
+        raise HTTPException(status_code=400, detail="No documents in knowledge base.")
+
+    try:
+        import time
+        start = time.perf_counter()
+
+        # Step 1: Retrieve evidence
+        query = request.query
+        result = orchestrator.retrieval_agent.retrieve(query)
+        documents = [r.content for r in result.results]
+
+        # Step 2: Rerank
+        from core.vector_store import SearchResult
+        search_results = [
+            SearchResult(content=r.content, score=r.score, source=r.source, chunk_id=i, metadata={})
+            for i, r in enumerate(result.results)
+        ]
+        ranking_result = orchestrator.ranking_agent.rank(query, search_results)
+        ranked_texts = [r.content for r in ranking_result.ranked_evidence]
+        ranked_scores = [r.relevance_score for r in ranking_result.ranked_evidence]
+
+        # Step 3: Generate response (simple context concatenation)
+        if orchestrator.response_agent.use_llm:
+            context = "\n\n".join(ranked_texts[:3])
+            response_text = orchestrator.response_agent.llm_provider.generate_with_context(query, context)
+        else:
+            # Extractive: just show top evidence
+            if ranked_texts:
+                response_text = f"Based on the knowledge base:\n\n{ranked_texts[0]}"
+                if len(ranked_texts) > 1:
+                    response_text += f"\n\n{ranked_texts[1]}"
+            else:
+                response_text = "No relevant information found."
+
+        latency = (time.perf_counter() - start) * 1000
+
+        return {
+            "query": query,
+            "response": response_text,
+            "evidence": ranked_texts[:5],
+            "evidence_scores": ranked_scores[:5],
+            "latency_ms": round(latency, 1),
+            "method": "simple_rag",
+        }
+
+    except Exception as e:
+        logger.error(f"Simple RAG failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/query", response_model=QueryResponse)
 async def process_query(request: QueryRequest):
     """
