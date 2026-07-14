@@ -4,17 +4,25 @@ Defines the multi-agent workflow as a directed graph.
 Manages state transitions and data flow between agents.
 
 Graph Nodes:
-- query_understanding: Analyze and rewrite the user query
-- retrieval: Retrieve relevant documents
-- evidence_ranking: Rerank and filter evidence
+- query_understanding: Planner/query agent (analyze and rewrite query)
+- retrieval: Retrieval agent (multi-query retrieval)
+- metadata_filter: Metadata agent (derive filtering hints)
+- evidence_collector: Merge retrieval + metadata hints
+- evidence_ranking: Rank collected evidence
+- evidence_verification: Verification agent (remove noisy evidence)
 - hallucination_detection: Detect hallucinations in LLM response
 - fact_verification: Verify individual claims
-- response_generation: Generate corrected response
+- response_generation: Reasoning + response generation with citations
 - evaluation: Compute metrics
 
 Graph Edges:
 - query_understanding -> retrieval
-- retrieval -> evidence_ranking
+- query_understanding -> metadata_filter
+- retrieval -> evidence_collector
+- metadata_filter -> evidence_collector
+- evidence_collector -> evidence_ranking
+- evidence_ranking -> evidence_verification
+- evidence_verification -> hallucination_detection
 - evidence_ranking -> hallucination_detection
 - hallucination_detection -> fact_verification
 - fact_verification -> response_generation
@@ -60,6 +68,14 @@ class PipelineState(TypedDict):
     retrieved_documents: List[str]
     retrieval_scores: List[float]
     num_retrieved: int
+
+    # Metadata filtering output
+    metadata_hints: Optional[dict]
+
+    # Evidence collector output
+    collected_evidence: List[str]
+    collected_scores: List[float]
+    num_collected: int
 
     # Evidence Ranking output
     ranked_evidence: List[str]
@@ -186,17 +202,24 @@ class MultiAgentOrchestrator:
         # Add nodes
         graph.add_node("query_understanding", self._node_query_understanding)
         graph.add_node("retrieval", self._node_retrieval)
+        graph.add_node("metadata_filter", self._node_metadata_filter)
+        graph.add_node("evidence_collector", self._node_evidence_collector)
         graph.add_node("evidence_ranking", self._node_evidence_ranking)
+        graph.add_node("evidence_verification", self._node_evidence_verification)
         graph.add_node("hallucination_detection", self._node_hallucination_detection)
         graph.add_node("fact_verification", self._node_fact_verification)
         graph.add_node("response_generation", self._node_response_generation)
         graph.add_node("evaluation", self._node_evaluation)
 
-        # Define edges (linear pipeline)
+        # Define edges (multi-agent pipeline with merge points)
         graph.set_entry_point("query_understanding")
         graph.add_edge("query_understanding", "retrieval")
-        graph.add_edge("retrieval", "evidence_ranking")
-        graph.add_edge("evidence_ranking", "hallucination_detection")
+        graph.add_edge("query_understanding", "metadata_filter")
+        graph.add_edge("retrieval", "evidence_collector")
+        graph.add_edge("metadata_filter", "evidence_collector")
+        graph.add_edge("evidence_collector", "evidence_ranking")
+        graph.add_edge("evidence_ranking", "evidence_verification")
+        graph.add_edge("evidence_verification", "hallucination_detection")
         graph.add_edge("hallucination_detection", "fact_verification")
         graph.add_edge("fact_verification", "response_generation")
         graph.add_edge("response_generation", "evaluation")
@@ -253,6 +276,85 @@ class MultiAgentOrchestrator:
                 "errors": state.get("errors", []) + [f"Retrieval: {str(e)}"],
             }
 
+    def _node_metadata_filter(self, state: PipelineState) -> dict:
+        """Node: Build metadata filtering hints from planner/query analysis."""
+        try:
+            qa = state.get("query_analysis") or {}
+            keywords = qa.get("keywords", []) if isinstance(qa, dict) else []
+            entities = qa.get("entities", []) if isinstance(qa, dict) else []
+            query_type = qa.get("query_type", "") if isinstance(qa, dict) else ""
+
+            hints = {
+                "keywords": [k.lower() for k in keywords[:8]],
+                "entities": [e.lower() for e in entities[:8]],
+                "query_type": query_type,
+            }
+
+            return {
+                "metadata_hints": hints,
+            }
+        except Exception as e:
+            logger.error(f"Metadata filtering failed: {e}")
+            return {
+                "metadata_hints": None,
+                "errors": state.get("errors", []) + [f"Metadata filter: {str(e)}"],
+            }
+
+    def _node_evidence_collector(self, state: PipelineState) -> dict:
+        """Node: Merge retrieval results with metadata hints and collect best evidence candidates."""
+        try:
+            docs = state.get("retrieved_documents", [])
+            scores = state.get("retrieval_scores", [])
+            hints = state.get("metadata_hints") or {}
+
+            if not docs:
+                return {
+                    "collected_evidence": [],
+                    "collected_scores": [],
+                    "num_collected": 0,
+                }
+
+            kw = set(hints.get("keywords", []))
+            ents = set(hints.get("entities", []))
+
+            ranked = []
+            for i, doc in enumerate(docs):
+                base = float(scores[i]) if i < len(scores) else 0.0
+                doc_l = doc.lower()
+                kw_hit = sum(1 for k in kw if k and k in doc_l)
+                ent_hit = sum(1 for e in ents if e and e in doc_l)
+                boost = (0.05 * kw_hit) + (0.1 * ent_hit)
+                ranked.append((doc, base + boost, base))
+
+            ranked.sort(key=lambda x: x[1], reverse=True)
+
+            seen = set()
+            filtered_docs = []
+            filtered_scores = []
+            for doc, score_adj, _ in ranked:
+                key = " ".join(doc.lower().split())[:220]
+                if key in seen:
+                    continue
+                seen.add(key)
+                filtered_docs.append(doc)
+                filtered_scores.append(score_adj)
+                if len(filtered_docs) >= 20:
+                    break
+
+            return {
+                "collected_evidence": filtered_docs,
+                "collected_scores": filtered_scores,
+                "num_collected": len(filtered_docs),
+            }
+        except Exception as e:
+            logger.error(f"Evidence collector failed: {e}")
+            return {
+                "collected_evidence": state.get("retrieved_documents", [])[:20],
+                "collected_scores": state.get("retrieval_scores", [])[:20],
+                "num_collected": min(20, len(state.get("retrieved_documents", []))),
+                "errors": state.get("errors", []) + [f"Evidence collector: {str(e)}"],
+            }
+
     def _node_evidence_ranking(self, state: PipelineState) -> dict:
         """Node: Rerank and filter retrieved evidence."""
         try:
@@ -260,8 +362,8 @@ class MultiAgentOrchestrator:
 
             # Reconstruct SearchResult objects
             search_results = []
-            docs = state.get("retrieved_documents", [])
-            scores = state.get("retrieval_scores", [])
+            docs = state.get("collected_evidence", []) or state.get("retrieved_documents", [])
+            scores = state.get("collected_scores", []) or state.get("retrieval_scores", [])
 
             for i, (doc, score) in enumerate(zip(docs, scores)):
                 search_results.append(SearchResult(
@@ -290,6 +392,53 @@ class MultiAgentOrchestrator:
                 "evidence_scores": [],
                 "num_ranked": min(5, len(state.get("retrieved_documents", []))),
                 "errors": state.get("errors", []) + [f"Ranking: {str(e)}"],
+            }
+
+    def _node_evidence_verification(self, state: PipelineState) -> dict:
+        """Node: Verification agent that removes noisy/duplicated evidence before generation."""
+        try:
+            docs = state.get("ranked_evidence", [])
+            scores = state.get("evidence_scores", [])
+
+            if not docs:
+                return {
+                    "ranked_evidence": [],
+                    "evidence_scores": [],
+                    "num_ranked": 0,
+                }
+
+            max_score = max(scores) if scores else 0.0
+            min_keep = max_score - 1.5 if scores else -999.0
+
+            verified_docs = []
+            verified_scores = []
+            seen = set()
+            for i, doc in enumerate(docs):
+                sc = scores[i] if i < len(scores) else 0.0
+                if len(doc.strip()) < 40:
+                    continue
+                if scores and sc < min_keep and len(verified_docs) >= 3:
+                    continue
+                key = " ".join(doc.lower().split())[:220]
+                if key in seen:
+                    continue
+                seen.add(key)
+                verified_docs.append(doc)
+                verified_scores.append(sc)
+
+            if not verified_docs:
+                verified_docs = docs[:3]
+                verified_scores = scores[:3] if scores else [0.0] * min(3, len(docs))
+
+            return {
+                "ranked_evidence": verified_docs,
+                "evidence_scores": verified_scores,
+                "num_ranked": len(verified_docs),
+            }
+        except Exception as e:
+            logger.error(f"Evidence verification failed: {e}")
+            return {
+                "errors": state.get("errors", []) + [f"Evidence verification: {str(e)}"],
             }
 
     def _node_hallucination_detection(self, state: PipelineState) -> dict:
@@ -423,9 +572,48 @@ class MultiAgentOrchestrator:
                 evidence_scores=state.get("evidence_scores", []),
             )
 
+            # If no upstream hallucination report exists (e.g., query-only mode with empty llm_response),
+            # evaluate hallucination on the generated response so the multi-agent pipeline always returns
+            # a native hallucination report.
+            generated_hallucination_report = state.get("hallucination_report")
+            generated_hallucination_rate = state.get("hallucination_rate", 0.0)
+
+            if generated_hallucination_report is None and result.response and evidence:
+                try:
+                    gen_report = self.hallucination_agent.detect(result.response, evidence)
+                    generated_hallucination_report = {
+                        "original_response": gen_report.original_response,
+                        "sentence_results": [
+                            {
+                                "sentence": r.sentence,
+                                "label": r.label,
+                                "confidence": r.confidence,
+                                "supporting_evidence": r.supporting_evidence,
+                                "scores": r.scores,
+                            }
+                            for r in gen_report.sentence_results
+                        ],
+                        "total_sentences": gen_report.total_sentences,
+                        "supported_count": gen_report.supported_count,
+                        "contradicted_count": gen_report.contradicted_count,
+                        "neutral_count": gen_report.neutral_count,
+                        "hallucination_rate": gen_report.hallucination_rate,
+                        "overall_confidence": gen_report.overall_confidence,
+                    }
+                    generated_hallucination_rate = gen_report.hallucination_rate
+                except Exception as e:
+                    logger.error(f"Post-generation hallucination detection failed: {e}")
+                    return {
+                        "corrected_response": result.response,
+                        "citations": result.citations,
+                        "errors": state.get("errors", []) + [f"Post-generation hallucination detection: {str(e)}"],
+                    }
+
             return {
                 "corrected_response": result.response,
                 "citations": result.citations,
+                "hallucination_report": generated_hallucination_report,
+                "hallucination_rate": generated_hallucination_rate,
             }
         except Exception as e:
             logger.error(f"Response generation failed: {e}")
@@ -499,6 +687,10 @@ class MultiAgentOrchestrator:
             "retrieved_documents": [],
             "retrieval_scores": [],
             "num_retrieved": 0,
+            "metadata_hints": None,
+            "collected_evidence": [],
+            "collected_scores": [],
+            "num_collected": 0,
             "ranked_evidence": [],
             "evidence_scores": [],
             "num_ranked": 0,

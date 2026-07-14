@@ -31,6 +31,16 @@ def api_upload_file(file):
     except Exception as e:
         return {"error": str(e)}
 
+def api_reset_kb():
+    try:
+        r = requests.post(f"{API_BASE_URL}/upload/reset", timeout=60)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.HTTPError as e:
+        return {"error": e.response.text}
+    except Exception as e:
+        return {"error": str(e)}
+
 def api_simple_rag(query):
     try:
         r = requests.post(f"{API_BASE_URL}/simple_rag", json={"query": query, "llm_response": ""}, timeout=120)
@@ -143,11 +153,80 @@ def render_evidence(evidence_list, scores=None):
         with st.expander(f"📖 Evidence [{i}]{score_str}"):
             st.write(ev)
 
+
+def render_architecture_panel():
+    """Render architecture diagrams for demo/report alignment."""
+    with st.expander("🏗️ Architecture: Simple RAG vs Multi-Agent", expanded=False):
+        tab_simple, tab_multi = st.tabs(["Simple RAG Pipeline", "Multi-Agent RAG Pipeline"])
+
+        with tab_simple:
+            st.caption("Baseline pipeline used for direct retrieval and answer synthesis.")
+            simple_dot = """
+            digraph SimpleRAG {
+                rankdir=TB;
+                node [shape=box, style="rounded,filled", fillcolor="#EAF3FF", color="#4A78C2", fontname="Helvetica"];
+                edge [color="#4A78C2"];
+
+                q [label="User Query"];
+                prep [label="Query Preprocessing\n(clean/rewrite if needed)"];
+                emb [label="Embedding Generation"];
+                vs [label="Vector Search\n(Top-K chunks)"];
+                rr [label="Optional Re-ranking"];
+                ctx [label="Retrieved Relevant Context"];
+                prompt [label="Prompt Construction\n(Query + Retrieved Docs)"];
+                llm [label="Response Generator"];
+                ans [label="Final Answer"];
+
+                q -> prep -> emb -> vs -> rr -> ctx -> prompt -> llm -> ans;
+            }
+            """
+            st.graphviz_chart(simple_dot, use_container_width=True)
+
+        with tab_multi:
+            st.caption("Multi-agent orchestration with planning, retrieval, evidence filtering, verification, and grounded generation.")
+            multi_dot = """
+            digraph MultiAgentRAG {
+                rankdir=TB;
+                node [shape=box, style="rounded,filled", fillcolor="#E9FFF1", color="#2E8B57", fontname="Helvetica"];
+                edge [color="#2E8B57"];
+
+                q [label="User Query"];
+                planner [label="Planner Agent\n(understand intent)"];
+
+                query_agent [label="Query Agent\n(rewrite query)"];
+                retrieval_agent [label="Retrieval Agent\n(multi-query retrieval)"];
+                metadata_agent [label="Metadata Agent\n(build filter hints)"];
+
+                collector [label="Evidence Collector\n(merge candidates)"];
+                verifier [label="Verification Agent\n(remove noisy docs)"];
+                reason [label="Reasoning/Ranking Agent\n(prioritize evidence)"];
+                fact [label="Citation/Fact Agent\n(sentence-level NLI checks)"];
+                gen [label="Response Generator"];
+                ans [label="Final Response"];
+
+                q -> planner;
+                planner -> query_agent;
+                planner -> retrieval_agent;
+                planner -> metadata_agent;
+
+                query_agent -> collector;
+                retrieval_agent -> collector;
+                metadata_agent -> collector;
+
+                collector -> reason -> verifier -> fact -> gen -> ans;
+            }
+            """
+            st.graphviz_chart(multi_dot, use_container_width=True)
+
 # --- MAIN PAGE ---
 
 def main():
     st.title("🔍 Hallucination Detection & Fact Verification")
     st.caption("Multi-Agent RAG Framework — Compare Simple RAG vs Multi-Agent Pipeline")
+    render_architecture_panel()
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
 
     health = api_health()
     if health["status"] == "offline":
@@ -155,12 +234,13 @@ def main():
         return
 
     # === SECTION 1: UPLOAD DOCUMENT ===
-    st.subheader("📄 Upload Document")
+    st.subheader("📄 Upload Documents")
     col_upload, col_status = st.columns([3, 1])
     with col_upload:
-        uploaded_file = st.file_uploader(
-            "Choose a PDF, TXT, MD, or HTML file",
+        uploaded_files = st.file_uploader(
+            "Choose PDF, TXT, MD, or HTML files",
             type=["pdf", "txt", "md", "html"],
+            accept_multiple_files=True,
             label_visibility="collapsed",
         )
     with col_status:
@@ -170,16 +250,38 @@ def main():
         else:
             st.warning("No document yet")
 
-    if uploaded_file:
-        st.caption(f"📎 Selected: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
-        if st.button("📤 Upload & Index", key="btn_upload", type="primary"):
-            with st.spinner(f"Indexing {uploaded_file.name}..."):
-                result = api_upload_file(uploaded_file)
+    action_col1, action_col2, _ = st.columns([1, 1, 6])
+    with action_col1:
+        if st.button("🧹 Clear KB", key="btn_clear_kb", help="Clear all indexed documents"):
+            result = api_reset_kb()
             if "error" in result:
                 st.error(result["error"])
             else:
-                st.success(f"✅ Done! **{result['num_chunks']}** chunks created from {uploaded_file.name}")
+                st.success("Knowledge base cleared.")
+                st.session_state.chat_history = []
                 st.rerun()
+
+    if uploaded_files:
+        st.caption(f"📎 Selected {len(uploaded_files)} file(s)")
+        with action_col2:
+            if st.button("➤", key="btn_upload", type="primary", help="Upload and index selected documents"):
+                total_chunks = 0
+                failures = []
+                for f in uploaded_files:
+                    with st.spinner(f"Indexing {f.name}..."):
+                        result = api_upload_file(f)
+                    if "error" in result:
+                        failures.append(f"{f.name}: {result['error']}")
+                    else:
+                        total_chunks += int(result.get("num_chunks", 0))
+
+                if failures:
+                    st.error("Some files failed to upload:")
+                    for fail in failures:
+                        st.write(f"- {fail}")
+                if total_chunks > 0:
+                    st.success(f"✅ Indexed **{total_chunks}** new chunks from {len(uploaded_files) - len(failures)} file(s).")
+                    st.rerun()
 
     has_docs = health.get("index_size", 0) > 0
     if not has_docs:
@@ -188,15 +290,25 @@ def main():
 
     st.markdown("---")
 
-    # === SECTION 2: ASK A QUESTION ===
-    st.subheader("💬 Ask a Question")
-    query = st.text_input(
-        "Type your question:",
-        placeholder="e.g., What is the main purpose of this document?",
-        key="main_query",
-    )
+    # === SECTION 2: CONVERSATIONAL CHAT ===
+    st.subheader("💬 Chat")
+    for turn in st.session_state.chat_history:
+        with st.chat_message("user"):
+            st.write(turn["query"])
+        with st.chat_message("assistant"):
+            st.markdown("**Simple RAG Answer**")
+            st.info(turn.get("simple_response", "No response."))
+            st.markdown("**Multi-Agent Answer**")
+            st.success(turn.get("agent_response", "No response."))
 
-    if st.button("📩 Send", type="primary", disabled=not query, key="btn_send"):
+            if turn.get("rag_hall_rate") is not None and turn.get("agent_hall_rate") is not None:
+                col_a, col_b = st.columns(2)
+                col_a.metric("Simple Hallucination", f"{turn['rag_hall_rate']:.0%}")
+                col_b.metric("Multi-Agent Hallucination", f"{turn['agent_hall_rate']:.0%}")
+
+    query = st.chat_input("Ask anything about your uploaded documents...")
+
+    if query:
         st.markdown("---")
         col_rag, col_agent = st.columns(2)
 
@@ -216,13 +328,11 @@ def main():
                 st.caption(f"⏱️ {rag.get('latency_ms', 0):.0f} ms | Method: Direct vector search (no reranking)")
                 render_evidence(rag.get("evidence", []), rag.get("evidence_scores", []))
 
-        # Step 2: Feed Simple RAG's response into Multi-Agent for verification & correction
+        # Step 2: Run Multi-Agent directly from the query
         with col_agent:
             st.subheader("🤖 Multi-Agent Pipeline")
-            with st.spinner("Running multi-agent pipeline (verify + correct)..."):
-                # Pass Simple RAG response as the llm_response to verify
-                rag_response = rag.get("response", "") if rag and "error" not in rag else ""
-                agent = api_multi_agent(query, llm_response=rag_response)
+            with st.spinner("Running multi-agent pipeline..."):
+                agent = api_multi_agent(query)
             if "error" in agent:
                 st.error(agent["error"])
             else:
@@ -230,7 +340,7 @@ def main():
                 agent_response = agent.get("corrected_response") or "No response."
                 st.success(agent_response)
                 latency = agent.get("metrics", {}).get("latency_ms", 0) if agent.get("metrics") else 0
-                st.caption(f"⏱️ {latency:.0f} ms | Method: Query rewrite → Rerank → Verify → Correct")
+                st.caption(f"⏱️ {latency:.0f} ms | Method: Query rewrite → Multi-query retrieval → Rerank → Generate")
                 render_evidence(agent.get("ranked_evidence", []))
                 if agent.get("citations"):
                     with st.expander("📑 Citations"):
@@ -238,21 +348,37 @@ def main():
                             st.markdown(f"**[{c['id']}]** {c['text']}")
 
         # Automatic hallucination analysis for both generated responses
+        # Fair comparison: same verifier + same evidence set for both outputs
         rag_verification = None
-        agent_report = None
+        agent_verification = None
+        agent_native_report = None
         with st.spinner("Running hallucination analysis..."):
-            # Verify Simple RAG response
+            fair_evidence = []
+            if agent and "error" not in agent and agent.get("ranked_evidence"):
+                fair_evidence = agent.get("ranked_evidence", [])
+            elif rag and "error" not in rag:
+                fair_evidence = rag.get("evidence", [])
+
+            # Verify Simple RAG final response
             if rag and "error" not in rag and rag.get("response"):
                 rag_verification = api_verify_response(
                     rag["response"],
-                    rag.get("evidence", []),
+                    fair_evidence,
                 )
-            # Multi-Agent already ran hallucination detection internally
-            if agent and "error" not in agent:
-                agent_report = agent.get("hallucination_report")
+
+            # Verify Multi-Agent corrected final response
+            if agent and "error" not in agent and agent.get("corrected_response"):
+                # Prefer native in-pipeline hallucination report; fallback to standalone verifier.
+                agent_native_report = agent.get("hallucination_report")
+                if not (agent_native_report and agent_native_report.get("sentence_results")):
+                    agent_verification = api_verify_response(
+                        agent.get("corrected_response", ""),
+                        fair_evidence,
+                    )
 
         st.markdown("---")
         st.subheader("🔬 Hallucination Analysis (Auto)")
+        st.caption("Fair comparison: both outputs are scored with the same verifier against the same evidence set.")
 
         col_h1, col_h2 = st.columns(2)
 
@@ -276,18 +402,31 @@ def main():
         agent_hall_rate = 0.0
         agent_available = False
         with col_h2:
-            st.subheader("🤖 Multi-Agent (of Simple RAG's response)")
-            if agent_report and agent_report.get("sentence_results"):
+            st.subheader("🤖 Multi-Agent Corrected Response")
+            if agent_native_report and agent_native_report.get("sentence_results"):
                 agent_available = True
-                agent_hall_rate = agent_report.get("hallucination_rate", 0.0)
+                av = agent_native_report
+                agent_hall_rate = av.get("hallucination_rate", 0.0)
                 c1, c2, c3 = st.columns(3)
-                c1.metric("✅ Supported", agent_report.get("supported_count", 0))
-                c2.metric("❌ Contradicted", agent_report.get("contradicted_count", 0))
-                c3.metric("⚠️ Uncertain", agent_report.get("neutral_count", 0))
+                c1.metric("✅ Supported", av.get("supported_count", 0))
+                c2.metric("❌ Contradicted", av.get("contradicted_count", 0))
+                c3.metric("⚠️ Uncertain", av.get("neutral_count", 0))
                 st.metric("Hallucination Rate", f"{agent_hall_rate:.0%}")
-                render_sentence_highlight(agent_report.get("sentence_results", []))
+                render_sentence_highlight(av.get("sentence_results", []))
+                st.caption("Source: Multi-agent in-pipeline hallucination detection")
+            elif agent_verification and "error" not in agent_verification and agent_verification.get("sentence_results"):
+                agent_available = True
+                av = agent_verification
+                agent_hall_rate = av.get("hallucination_rate", 0.0)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("✅ Supported", av.get("supported_count", 0))
+                c2.metric("❌ Contradicted", av.get("contradicted_count", 0))
+                c3.metric("⚠️ Uncertain", av.get("neutral_count", 0))
+                st.metric("Hallucination Rate", f"{agent_hall_rate:.0%}")
+                render_sentence_highlight(av.get("sentence_results", []))
+                st.caption("Source: Standalone verifier fallback")
             else:
-                st.info("Multi-Agent hallucination report not available.")
+                st.info("Could not analyze Multi-Agent corrected response.")
 
         st.markdown("---")
         st.subheader("🏁 Which Hallucinates More?")
@@ -319,191 +458,13 @@ def main():
         else:
             st.info("Comparison unavailable — could not complete analysis.")
 
-    st.markdown("---")
-
-    # === SECTION 3: HALLUCINATION ANALYSIS ===
-    st.subheader("🔬 Hallucination Analysis")
-    st.caption("Paste an AI-generated response to check it for hallucinations against the uploaded document")
-
-    llm_text = st.text_area(
-        "LLM Response to verify:",
-        placeholder="Paste any AI-generated text here...",
-        height=120,
-        key="llm_input",
-    )
-
-    if st.button("📩 Analyze", type="primary", disabled=not (query and llm_text), key="btn_analyze"):
-        st.markdown("---")
-
-        # Run both analyses
-        with st.spinner("Running hallucination analysis on both pipelines..."):
-            # Multi-Agent analysis (includes hallucination detection)
-            result_agent = api_multi_agent(query, llm_text)
-            # Simple RAG response
-            rag = api_simple_rag(query)
-            # Also verify the Simple RAG response for hallucinations
-            rag_verification = None
-            if "error" not in rag and rag.get("response"):
-                try:
-                    r = requests.post(f"{API_BASE_URL}/verify_response",
-                        json={"text": rag["response"], "evidence": rag.get("evidence", [])}, timeout=120)
-                    if r.status_code == 200:
-                        rag_verification = r.json()
-                except Exception:
-                    pass
-
-        # Show corrected responses side by side
-        col_left, col_right = st.columns(2)
-        with col_left:
-            st.subheader("📄 Simple RAG Response")
-            if "error" not in rag:
-                st.info(rag.get("response", "No response."))
-            else:
-                st.error(rag["error"])
-        with col_right:
-            st.subheader("🤖 Multi-Agent Corrected Response")
-            if "error" not in result_agent:
-                st.success(result_agent.get("corrected_response", "No response."))
-            else:
-                st.error(result_agent["error"])
-                return
-
-        st.markdown("---")
-
-        # Hallucination analysis for BOTH
-        col_h1, col_h2 = st.columns(2)
-
-        # Simple RAG hallucination report
-        rag_hall_rate = 0.0
-        with col_h1:
-            st.subheader("📄 Simple RAG — Hallucination Report")
-            if rag_verification and rag_verification.get("sentence_results"):
-                rv = rag_verification
-                rag_hall_rate = rv["hallucination_rate"]
-                c1, c2, c3 = st.columns(3)
-                c1.metric("✅ Supported", rv["supported_count"])
-                c2.metric("❌ Contradicted", rv["contradicted_count"])
-                c3.metric("⚠️ Uncertain", rv["neutral_count"])
-                
-                # Show calculation
-                total = rv["total_sentences"]
-                contradicted = rv["contradicted_count"]
-                uncertain = rv["neutral_count"]
-                hallucinated = contradicted + uncertain
-                
-                st.markdown(f"""
-**Hallucination Calculation:**
-```
-Hallucination Rate = (Contradicted + Uncertain) / Total Sentences
-                   = ({contradicted} + {uncertain}) / {total}
-                   = {hallucinated} / {total}
-                   = {rag_hall_rate:.0%}
-```
-                """)
-                st.metric("Hallucination Rate", f"{rag_hall_rate:.0%}")
-                st.markdown("---")
-                render_sentence_highlight(rv["sentence_results"])
-            else:
-                st.info("Could not analyze Simple RAG response.")
-
-        # Multi-Agent hallucination report
-        agent_hall_rate = 0.0
-        with col_h2:
-            st.subheader("🤖 Multi-Agent — Hallucination Report")
-            report = result_agent.get("hallucination_report") if "error" not in result_agent else None
-            if report and report.get("sentence_results"):
-                agent_hall_rate = report["hallucination_rate"]
-                c1, c2, c3 = st.columns(3)
-                c1.metric("✅ Supported", report["supported_count"])
-                c2.metric("❌ Contradicted", report["contradicted_count"])
-                c3.metric("⚠️ Uncertain", report["neutral_count"])
-                
-                # Show calculation
-                total = report["total_sentences"]
-                contradicted = report["contradicted_count"]
-                uncertain = report["neutral_count"]
-                hallucinated = contradicted + uncertain
-                
-                st.markdown(f"""
-**Hallucination Calculation:**
-```
-Hallucination Rate = (Contradicted + Uncertain) / Total Sentences
-                   = ({contradicted} + {uncertain}) / {total}
-                   = {hallucinated} / {total}
-                   = {agent_hall_rate:.0%}
-```
-                """)
-                st.metric("Hallucination Rate", f"{agent_hall_rate:.0%}")
-                st.markdown("---")
-                render_sentence_highlight(report["sentence_results"])
-            else:
-                st.info("Could not analyze Multi-Agent response.")
-
-        # === VERDICT: Which is more hallucinating? ===
-        st.markdown("---")
-        st.subheader("🏆 Verdict")
-        if rag_hall_rate > 0 or agent_hall_rate > 0:
-            if rag_hall_rate > agent_hall_rate:
-                diff = rag_hall_rate - agent_hall_rate
-                st.error(
-                    f"**Simple RAG is more hallucinating** (rate: {rag_hall_rate:.0%}) "
-                    f"compared to Multi-Agent Pipeline (rate: {agent_hall_rate:.0%}). "
-                    f"The Multi-Agent system reduces hallucinations by **{diff:.0%}**."
-                )
-            elif agent_hall_rate > rag_hall_rate:
-                diff = agent_hall_rate - rag_hall_rate
-                st.warning(
-                    f"**Multi-Agent Pipeline is more hallucinating** (rate: {agent_hall_rate:.0%}) "
-                    f"compared to Simple RAG (rate: {rag_hall_rate:.0%})."
-                )
-            else:
-                st.info(
-                    f"Both systems have the **same hallucination rate** ({rag_hall_rate:.0%}). "
-                    f"No significant difference detected."
-                )
-
-            # Comparison table
-            st.markdown("---")
-            col_m1, col_m2 = st.columns(2)
-            col_m1.metric("Simple RAG Hallucination Rate", f"{rag_hall_rate:.0%}")
-            col_m2.metric("Multi-Agent Hallucination Rate", f"{agent_hall_rate:.0%}")
-        else:
-            st.success("✅ Neither system shows significant hallucination for this input.")
-
-        # Show methodology explanation
-        show_hallucination_methodology()
-
-        # Additional tabs for detailed info
-        if "error" not in result_agent:
-            st.markdown("---")
-            tab1, tab2, tab3 = st.tabs(["✅ Fact Verification", "📚 Evidence", "📊 Metrics"])
-
-            with tab1:
-                claims = result_agent.get("verified_claims", [])
-                if claims:
-                    for cl in claims:
-                        icon = {"VERIFIED": "✅", "REFUTED": "❌", "UNVERIFIABLE": "⚠️"}.get(cl["verdict"], "❓")
-                        st.markdown(f"{icon} **{cl['verdict']}** ({cl['confidence']:.2f}): {cl['claim']}")
-                vr = result_agent.get("verification_report")
-                if vr:
-                    st.markdown("---")
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("Verified", vr["verified_count"])
-                    c2.metric("Refuted", vr["refuted_count"])
-                    c3.metric("Accuracy", f"{vr['overall_accuracy']:.0%}")
-
-            with tab2:
-                render_evidence(result_agent.get("ranked_evidence", []))
-
-            with tab3:
-                m = result_agent.get("metrics")
-                if m:
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Precision", f"{m.get('precision', 0):.3f}")
-                    c2.metric("Recall", f"{m.get('recall', 0):.3f}")
-                    c3.metric("F1", f"{m.get('f1_score', 0):.3f}")
-                    c4.metric("Latency", f"{m.get('latency_ms', 0):.0f} ms")
-
+        st.session_state.chat_history.append({
+            "query": query,
+            "simple_response": rag.get("response", "No response.") if rag and "error" not in rag else "Error",
+            "agent_response": agent.get("corrected_response", "No response.") if agent and "error" not in agent else "Error",
+            "rag_hall_rate": rag_hall_rate if rag_available else None,
+            "agent_hall_rate": agent_hall_rate if agent_available else None,
+        })
 
 if __name__ == "__main__":
     main()

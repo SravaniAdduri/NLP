@@ -1,0 +1,26 @@
+Suggested Test Queries
+
+Single-document factual
+1. What encryption is used for data at rest in SecureMail?
+2. What is the session timeout in SecureMail v2.1?
+3. Does SecureMail support attachments in v2.1?
+
+Operational runbook
+4. What are the RPO and RTO for Billing API recovery?
+5. How often are incremental backups taken?
+6. What is the required customer communication frequency during incidents?
+
+University policy
+7. What is the attendance requirement for each course?
+8. How many credits does the M.Tech thesis carry?
+9. What is the plagiarism review threshold?
+
+Cross-document / multi-hop
+10. Compare SecureMail session timeout with Billing API alert acknowledgment target.
+11. Which document mentions a 30-minute expiry and what does it refer to?
+12. List all deadlines or fixed windows across the documents.
+
+Hallucination stress tests
+13. Is there a native SecureMail mobile app in v2.1?
+14. Does the runbook define SEV-4 incidents?
+15. Is the passing mark 35 out of 100 in the university handbook?

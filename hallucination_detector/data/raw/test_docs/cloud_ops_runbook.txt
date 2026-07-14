@@ -1,0 +1,35 @@
+Cloud Operations Runbook
+
+Service: Billing API
+Environment: production
+Primary Region: us-east-1
+Secondary Region: us-west-2
+
+SLO Targets
+- Availability: 99.95%
+- p95 Latency: under 250 ms
+
+Deployment Window
+- Tuesdays and Thursdays
+- 02:00 to 04:00 UTC
+
+Incident Severity Definitions
+- SEV-1: Full outage affecting all customers
+- SEV-2: Major degradation affecting multiple customers
+- SEV-3: Minor degradation or single-customer impact
+
+Escalation Policy
+1. On-call engineer acknowledges alert within 5 minutes.
+2. Incident commander assigned within 10 minutes for SEV-1 and SEV-2.
+3. Customer communication every 30 minutes during active incident.
+
+Backup and Recovery
+- Full database backup every 24 hours.
+- Incremental backups every 4 hours.
+- Recovery Point Objective (RPO): 15 minutes.
+- Recovery Time Objective (RTO): 60 minutes.
+
+Postmortem Requirements
+- Draft within 48 hours.
+- Final review within 7 days.
+- Include timeline, root cause, corrective actions, and owners.

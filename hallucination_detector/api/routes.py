@@ -34,6 +34,19 @@ from orchestrator import MultiAgentOrchestrator
 router = APIRouter()
 
 
+@router.post("/upload/reset")
+async def reset_knowledge_base():
+    """Clear all indexed documents from the knowledge base."""
+    orchestrator = get_orchestrator()
+    try:
+        orchestrator.retrieval_agent.vector_store.clear()
+        orchestrator.save_index()
+        return {"message": "Knowledge base cleared", "index_size": 0}
+    except Exception as e:
+        logger.error(f"Reset knowledge base failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
     """Check system health and index status."""
@@ -308,11 +321,9 @@ async def upload_file(file: UploadFile = File(...)):
             tmp.write(content)
             tmp_path = tmp.name
 
-        # Clear old data — only use the current document
-        orchestrator.retrieval_agent.vector_store.clear()
-
         # Ingest the document
         num_chunks = orchestrator.ingest_document(tmp_path)
+        orchestrator.save_index()
 
         # Cleanup temp file
         os.unlink(tmp_path)
@@ -334,10 +345,8 @@ async def upload_text(request: UploadRequest):
     orchestrator = get_orchestrator()
 
     try:
-        # Clear old data — only use current input
-        orchestrator.retrieval_agent.vector_store.clear()
-
         num_chunks = orchestrator.ingest_text(request.text, request.source_name)
+        orchestrator.save_index()
 
         return UploadResponse(
             message=f"Successfully ingested text from '{request.source_name}'",
@@ -356,10 +365,8 @@ async def upload_url(request: URLIngestRequest):
     orchestrator = get_orchestrator()
 
     try:
-        # Clear old data — only use current URL
-        orchestrator.retrieval_agent.vector_store.clear()
-
         num_chunks = orchestrator.ingest_url(request.url)
+        orchestrator.save_index()
 
         return UploadResponse(
             message=f"Successfully ingested URL: {request.url}",
