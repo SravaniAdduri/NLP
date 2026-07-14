@@ -149,11 +149,16 @@ class ResponseGenerationAgent:
         # Build citations
         citations = [{"id": i+1, "text": ev[:200], "marker": f"[{i+1}]"} for i, ev in enumerate(evidence)]
 
+        # Determine question intent so the formatter can choose a tighter answer style
+        query_lc = query.lower()
+        is_compare_query = any(word in query_lc for word in ["compare", "difference", "versus", "vs"])
+        is_list_query = any(word in query_lc for word in ["list", "all", "show", "what are", "what is", "what's", "how many", "which"])
+        is_why_how_query = any(word in query_lc for word in ["why", "how", "explain", "describe"])
+
         # Extract and score all sentences from evidence
         # Detect summary-type queries
         summary_keywords = {"summary", "summarize", "summarise", "overview", "brief", "gist", "outline"}
-        query_lower = query.lower()
-        is_summary_query = any(kw in query_lower for kw in summary_keywords)
+        is_summary_query = any(kw in query_lc for kw in summary_keywords)
 
         query_words = set(re.findall(r'\b\w{3,}\b', query_lower))
         query_words -= {"what", "who", "when", "where", "why", "how", "which",
@@ -217,7 +222,14 @@ class ResponseGenerationAgent:
         used_ev = set()
 
         # For summary queries, select more sentences for broader coverage
-        max_sents = 8 if is_summary_query else 6
+        if is_compare_query:
+            max_sents = 4
+        elif is_list_query or is_why_how_query:
+            max_sents = 5
+        elif is_summary_query:
+            max_sents = 6
+        else:
+            max_sents = 5
 
         for sent, sc, ev_idx in scored:
             if len(selected) >= max_sents:
@@ -240,10 +252,18 @@ class ResponseGenerationAgent:
         paragraphs = []
         for ev_idx in sorted(groups.keys()):
             sents = groups[ev_idx]
-            paragraph = " ".join(sents) + f" [{ev_idx + 1}]"
+            paragraph = " ".join(sents)
+            # Trim overly verbose passages so the answer stays focused
+            if len(paragraph.split()) > 45 and not is_summary_query:
+                paragraph = " ".join(paragraph.split()[:45]) + "..."
+            paragraph = paragraph + f" [{ev_idx + 1}]"
             paragraphs.append(paragraph)
 
-        response_text = "\n\n".join(paragraphs)
+        # Prefer a concise bullet-like list for operational questions.
+        if is_compare_query or is_list_query:
+            response_text = "\n".join(f"- {p}" for p in paragraphs)
+        else:
+            response_text = "\n\n".join(paragraphs)
 
         if not response_text.strip():
             # Final safety net

@@ -160,60 +160,59 @@ def render_architecture_panel():
         tab_simple, tab_multi = st.tabs(["Simple RAG Pipeline", "Multi-Agent RAG Pipeline"])
 
         with tab_simple:
-            st.caption("Baseline pipeline used for direct retrieval and answer synthesis.")
             simple_dot = """
             digraph SimpleRAG {
-                rankdir=TB;
-                node [shape=box, style="rounded,filled", fillcolor="#EAF3FF", color="#4A78C2", fontname="Helvetica"];
+                rankdir=LR;
+                node [shape=box, style="rounded,filled", fillcolor="#EAF3FF", color="#4A78C2",
+                      fontname="Helvetica", fontsize=10, width=1.2, height=0.4];
                 edge [color="#4A78C2"];
+                nodesep=0.3; ranksep=0.4;
 
-                q [label="User Query"];
-                prep [label="Query Preprocessing\n(clean/rewrite if needed)"];
-                emb [label="Embedding Generation"];
-                vs [label="Vector Search\n(Top-K chunks)"];
-                rr [label="Optional Re-ranking"];
-                ctx [label="Retrieved Relevant Context"];
-                prompt [label="Prompt Construction\n(Query + Retrieved Docs)"];
-                llm [label="Response Generator"];
-                ans [label="Final Answer"];
+                q [label="Query"];
+                emb [label="Embed"];
+                vs [label="Vector Search"];
+                ctx [label="Context"];
+                gen [label="Generate"];
+                ans [label="Answer"];
 
-                q -> prep -> emb -> vs -> rr -> ctx -> prompt -> llm -> ans;
+                q -> emb -> vs -> ctx -> gen -> ans;
             }
             """
             st.graphviz_chart(simple_dot, use_container_width=True)
 
         with tab_multi:
-            st.caption("Multi-agent orchestration with planning, retrieval, evidence filtering, verification, and grounded generation.")
             multi_dot = """
             digraph MultiAgentRAG {
-                rankdir=TB;
-                node [shape=box, style="rounded,filled", fillcolor="#E9FFF1", color="#2E8B57", fontname="Helvetica"];
+                rankdir=LR;
+                node [shape=box, style="rounded,filled", fillcolor="#E9FFF1", color="#2E8B57",
+                      fontname="Helvetica", fontsize=10, width=1.2, height=0.4];
                 edge [color="#2E8B57"];
+                nodesep=0.25; ranksep=0.35;
 
-                q [label="User Query"];
-                planner [label="Planner Agent\n(understand intent)"];
+                q [label="Query"];
+                plan [label="Planner"];
 
-                query_agent [label="Query Agent\n(rewrite query)"];
-                retrieval_agent [label="Retrieval Agent\n(multi-query retrieval)"];
-                metadata_agent [label="Metadata Agent\n(build filter hints)"];
+                qa [label="Rewrite"];
+                ret [label="Retrieve"];
+                meta [label="Metadata"];
 
-                collector [label="Evidence Collector\n(merge candidates)"];
-                verifier [label="Verification Agent\n(remove noisy docs)"];
-                reason [label="Reasoning/Ranking Agent\n(prioritize evidence)"];
-                fact [label="Citation/Fact Agent\n(sentence-level NLI checks)"];
-                gen [label="Response Generator"];
-                ans [label="Final Response"];
+                col [label="Collect"];
+                rank [label="Rerank"];
+                ver [label="Verify"];
+                fact [label="Fact Check"];
+                gen [label="Generate"];
+                ans [label="Response"];
 
-                q -> planner;
-                planner -> query_agent;
-                planner -> retrieval_agent;
-                planner -> metadata_agent;
+                q -> plan;
+                plan -> qa;
+                plan -> ret;
+                plan -> meta;
 
-                query_agent -> collector;
-                retrieval_agent -> collector;
-                metadata_agent -> collector;
+                qa -> col;
+                ret -> col;
+                meta -> col;
 
-                collector -> reason -> verifier -> fact -> gen -> ans;
+                col -> rank -> ver -> fact -> gen -> ans;
             }
             """
             st.graphviz_chart(multi_dot, use_container_width=True)
@@ -309,6 +308,10 @@ def main():
     query = st.chat_input("Ask anything about your uploaded documents...")
 
     if query:
+        # Show the user's question immediately so it stays visible
+        with st.chat_message("user"):
+            st.write(query)
+
         st.markdown("---")
         col_rag, col_agent = st.columns(2)
 
@@ -348,19 +351,13 @@ def main():
                             st.markdown(f"**[{c['id']}]** {c['text']}")
 
         # Automatic hallucination analysis for both generated responses
-        # Fair comparison: same verifier + same evidence set for both outputs
         rag_verification = None
         agent_verification = None
         agent_native_report = None
         with st.spinner("Running hallucination analysis..."):
-            fair_evidence = []
-            if agent and "error" not in agent and agent.get("ranked_evidence"):
-                fair_evidence = agent.get("ranked_evidence", [])
-            elif rag and "error" not in rag:
-                fair_evidence = rag.get("evidence", [])
-
             # Verify Simple RAG final response
             if rag and "error" not in rag and rag.get("response"):
+                fair_evidence = rag.get("evidence", [])
                 rag_verification = api_verify_response(
                     rag["response"],
                     fair_evidence,
@@ -371,9 +368,10 @@ def main():
                 # Prefer native in-pipeline hallucination report; fallback to standalone verifier.
                 agent_native_report = agent.get("hallucination_report")
                 if not (agent_native_report and agent_native_report.get("sentence_results")):
+                    agent_evidence = agent.get("generated_evidence") or agent.get("ranked_evidence", [])
                     agent_verification = api_verify_response(
                         agent.get("corrected_response", ""),
-                        fair_evidence,
+                        agent_evidence,
                     )
 
         st.markdown("---")

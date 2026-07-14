@@ -93,6 +93,7 @@ class PipelineState(TypedDict):
     # Response Generation output
     corrected_response: str
     citations: List[dict]
+    generated_evidence: List[str]
 
     # Evaluation output
     metrics: Optional[dict]
@@ -575,12 +576,13 @@ class MultiAgentOrchestrator:
             # If no upstream hallucination report exists (e.g., query-only mode with empty llm_response),
             # evaluate hallucination on the generated response so the multi-agent pipeline always returns
             # a native hallucination report.
+            generated_evidence = evidence[: max(1, len(result.citations))] if evidence else []
             generated_hallucination_report = state.get("hallucination_report")
             generated_hallucination_rate = state.get("hallucination_rate", 0.0)
 
-            if generated_hallucination_report is None and result.response and evidence:
+            if generated_hallucination_report is None and result.response and generated_evidence:
                 try:
-                    gen_report = self.hallucination_agent.detect(result.response, evidence)
+                    gen_report = self.hallucination_agent.detect(result.response, generated_evidence)
                     generated_hallucination_report = {
                         "original_response": gen_report.original_response,
                         "sentence_results": [
@@ -612,6 +614,7 @@ class MultiAgentOrchestrator:
             return {
                 "corrected_response": result.response,
                 "citations": result.citations,
+                "generated_evidence": generated_evidence,
                 "hallucination_report": generated_hallucination_report,
                 "hallucination_rate": generated_hallucination_rate,
             }
