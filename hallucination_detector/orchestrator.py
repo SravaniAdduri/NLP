@@ -576,7 +576,7 @@ class MultiAgentOrchestrator:
             # If no upstream hallucination report exists (e.g., query-only mode with empty llm_response),
             # evaluate hallucination on the generated response so the multi-agent pipeline always returns
             # a native hallucination report.
-            generated_evidence = evidence[: max(1, len(result.citations))] if evidence else []
+            generated_evidence = evidence[:5] if evidence else []
             generated_hallucination_report = state.get("hallucination_report")
             generated_hallucination_rate = state.get("hallucination_rate", 0.0)
 
@@ -608,6 +608,7 @@ class MultiAgentOrchestrator:
                     return {
                         "corrected_response": result.response,
                         "citations": result.citations,
+                        "generated_evidence": generated_evidence,
                         "errors": state.get("errors", []) + [f"Post-generation hallucination detection: {str(e)}"],
                     }
 
@@ -621,8 +622,9 @@ class MultiAgentOrchestrator:
         except Exception as e:
             logger.error(f"Response generation failed: {e}")
             return {
-                "corrected_response": "Unable to generate a corrected response.",
+                "corrected_response": "",
                 "citations": [],
+                "generated_evidence": [],
                 "errors": state.get("errors", []) + [f"Response generation: {str(e)}"],
             }
 
@@ -697,6 +699,7 @@ class MultiAgentOrchestrator:
             "ranked_evidence": [],
             "evidence_scores": [],
             "num_ranked": 0,
+            "generated_evidence": [],
             "hallucination_report": None,
             "hallucination_rate": 0.0,
             "verification_report": None,

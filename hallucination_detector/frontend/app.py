@@ -249,38 +249,38 @@ def main():
         else:
             st.warning("No document yet")
 
-    action_col1, action_col2, _ = st.columns([1, 1, 6])
-    with action_col1:
-        if st.button("🧹 Clear KB", key="btn_clear_kb", help="Clear all indexed documents"):
-            result = api_reset_kb()
-            if "error" in result:
-                st.error(result["error"])
-            else:
-                st.success("Knowledge base cleared.")
-                st.session_state.chat_history = []
+    if uploaded_files:
+        # Auto-upload on file selection (no extra button needed)
+        if "last_uploaded" not in st.session_state:
+            st.session_state.last_uploaded = set()
+        current_names = {f.name for f in uploaded_files}
+        new_files = [f for f in uploaded_files if f.name not in st.session_state.last_uploaded]
+        if new_files:
+            total_chunks = 0
+            failures = []
+            for f in new_files:
+                with st.spinner(f"Indexing {f.name}..."):
+                    result = api_upload_file(f)
+                if "error" in result:
+                    failures.append(f"{f.name}: {result['error']}")
+                else:
+                    total_chunks += int(result.get("num_chunks", 0))
+            st.session_state.last_uploaded = current_names
+            if failures:
+                st.error("Some files failed: " + ", ".join(failures))
+            if total_chunks > 0:
+                st.success(f"✅ Indexed **{total_chunks}** chunks from {len(new_files)} file(s).")
                 st.rerun()
 
-    if uploaded_files:
-        st.caption(f"📎 Selected {len(uploaded_files)} file(s)")
-        with action_col2:
-            if st.button("➤", key="btn_upload", type="primary", help="Upload and index selected documents"):
-                total_chunks = 0
-                failures = []
-                for f in uploaded_files:
-                    with st.spinner(f"Indexing {f.name}..."):
-                        result = api_upload_file(f)
-                    if "error" in result:
-                        failures.append(f"{f.name}: {result['error']}")
-                    else:
-                        total_chunks += int(result.get("num_chunks", 0))
-
-                if failures:
-                    st.error("Some files failed to upload:")
-                    for fail in failures:
-                        st.write(f"- {fail}")
-                if total_chunks > 0:
-                    st.success(f"✅ Indexed **{total_chunks}** new chunks from {len(uploaded_files) - len(failures)} file(s).")
-                    st.rerun()
+    if st.button("🧹 Clear KB", key="btn_clear_kb", help="Clear all indexed documents"):
+        result = api_reset_kb()
+        if "error" in result:
+            st.error(result["error"])
+        else:
+            st.session_state.last_uploaded = set()
+            st.session_state.chat_history = []
+            st.success("Knowledge base cleared.")
+            st.rerun()
 
     has_docs = health.get("index_size", 0) > 0
     if not has_docs:
