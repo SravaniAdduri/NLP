@@ -12,6 +12,25 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+st.markdown("""
+<style>
+    html, body, [class*="css"] {
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-size: 12px;
+    }
+    h1 { font-size: 16px !important; font-weight: 700; }
+    h2 { font-size: 16px !important; font-weight: 700; }
+    h3 { font-size: 16px !important; font-weight: 700; }
+    .stMarkdown p { font-size: 12px; }
+    .stMarkdown li { font-size: 12px; }
+    .stAlert p { font-size: 12px; }
+    .stMetric label { font-size: 12px; }
+    .stMetric [data-testid="metric-container"] div { font-size: 12px; }
+    .stCaption { font-size: 11px; }
+    code, pre { font-size: 12px; }
+</style>
+""", unsafe_allow_html=True)
+
 # --- API CALLS ---
 
 def api_health():

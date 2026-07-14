@@ -160,7 +160,7 @@ class ResponseGenerationAgent:
         summary_keywords = {"summary", "summarize", "summarise", "overview", "brief", "gist", "outline"}
         is_summary_query = any(kw in query_lc for kw in summary_keywords)
 
-        query_words = set(re.findall(r'\b\w{3,}\b', query_lower))
+        query_words = set(re.findall(r'\b\w{3,}\b', query_lc))
         query_words -= {"what", "who", "when", "where", "why", "how", "which",
                         "does", "the", "are", "was", "were", "can", "could",
                         "about", "tell", "explain", "describe", "main", "purpose",
