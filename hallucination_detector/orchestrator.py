@@ -576,7 +576,7 @@ class MultiAgentOrchestrator:
             # If no upstream hallucination report exists (e.g., query-only mode with empty llm_response),
             # evaluate hallucination on the generated response so the multi-agent pipeline always returns
             # a native hallucination report.
-            generated_evidence = evidence[:5] if evidence else []
+            generated_evidence = evidence[: max(1, min(5, len(result.citations)))] if evidence else []
             generated_hallucination_report = state.get("hallucination_report")
             generated_hallucination_rate = state.get("hallucination_rate", 0.0)
 
