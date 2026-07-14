@@ -69,9 +69,9 @@ async def system_status():
 @router.post("/simple_rag")
 async def simple_rag_query(request: QueryRequest):
     """
-    Simple RAG: Retrieve evidence and generate a direct answer.
-    No hallucination detection or fact verification.
-    This is the baseline RAG for comparison.
+    Simple RAG: Basic vector search + direct passage concatenation.
+    NO reranking, NO query rewriting, NO hallucination detection.
+    This is the naive baseline — fast but prone to hallucination.
     """
     orchestrator = get_orchestrator()
 
@@ -80,71 +80,30 @@ async def simple_rag_query(request: QueryRequest):
 
     try:
         import time
+        import re as _re
         start = time.perf_counter()
 
-        # Step 1: Retrieve evidence
+        # Step 1: Direct vector search (no query rewriting, no reranking)
         query = request.query
         result = orchestrator.retrieval_agent.retrieve(query)
         documents = [r.content for r in result.results]
+        scores = [r.score for r in result.results]
 
-        # Step 2: Rerank
-        from core.vector_store import SearchResult
-        search_results = [
-            SearchResult(content=r.content, score=r.score, source=r.source, chunk_id=i, metadata={})
-            for i, r in enumerate(result.results)
-        ]
-        ranking_result = orchestrator.ranking_agent.rank(query, search_results)
-        ranked_texts = [r.content for r in ranking_result.ranked_evidence]
-        ranked_scores = [r.relevance_score for r in ranking_result.ranked_evidence]
-
-        # Step 3: Build clean extractive response from top evidence
-        if ranked_texts:
-            import re as _re
-
-            def _split_sentences(text):
-                """Split text into sentences, handling abbreviations and decimals."""
-                # Protect common abbreviations and decimals from splitting
-                protected = text
-                protected = _re.sub(r'(\d)\.(\d)', r'\1<DOT>\2', protected)
-                for abbr in ['Dr.', 'Mr.', 'Mrs.', 'Ms.', 'Prof.', 'Sr.', 'Jr.',
-                             'Inc.', 'Ltd.', 'Corp.', 'vs.', 'etc.', 'e.g.', 'i.e.',
-                             'Fig.', 'fig.', 'Eq.', 'eq.', 'No.', 'no.', 'Vol.', 'vol.']:
-                    protected = protected.replace(abbr, abbr.replace('.', '<DOT>'))
-                sents = _re.split(r'(?<=[.!?])\s+', protected)
-                return [s.replace('<DOT>', '.').strip() for s in sents if s.strip()]
-
-            all_sents = []
-            seen = set()
-            for i, text in enumerate(ranked_texts[:5], 1):
-                clean = _re.sub(r'\s+', ' ', text.replace('\n', ' ')).strip()
-                for sent in _split_sentences(clean):
-                    words = sent.split()
-                    if len(words) < 5 or len(sent) < 20:
-                        continue
-                    # Skip near-duplicate sentences
-                    key = ' '.join(sorted(set(w.lower() for w in words)))
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    # Ensure sentence ends properly
-                    if not sent[-1] in '.!?':
-                        sent = sent.rstrip(',;:') + '.'
-                    all_sents.append((sent, i))
-
-            if all_sents:
-                # Take top sentences, preserving source order
-                selected = all_sents[:8]
-                # Group by source for coherent paragraphs
-                groups = {}
-                for sent, src in selected:
-                    groups.setdefault(src, []).append(sent)
-                parts = []
-                for src in sorted(groups.keys()):
-                    paragraph = " ".join(groups[src]) + f" [{src}]"
-                    parts.append(paragraph)
-                response_text = "\n\n".join(parts)
-            else:
-                response_text = "No relevant information found."
+        # Step 2: Naive response — concatenate top passages with minimal cleaning
+        if documents:
+            response_parts = []
+            for i, doc in enumerate(documents[:3], 1):
+                # Basic cleaning only
+                clean = _re.sub(r'\s+', ' ', doc.replace('\n', ' ')).strip()
+                if len(clean) > 500:
+                    # Cut at sentence boundary if possible
+                    cut_point = clean[:500].rfind('.')
+                    if cut_point > 200:
+                        clean = clean[:cut_point + 1]
+                    else:
+                        clean = clean[:500] + "..."
+                response_parts.append(f"{clean} [{i}]")
+            response_text = "\n\n".join(response_parts)
         else:
             response_text = "No relevant information found in the uploaded document."
 
@@ -153,8 +112,8 @@ async def simple_rag_query(request: QueryRequest):
         return {
             "query": query,
             "response": response_text,
-            "evidence": ranked_texts[:5],
-            "evidence_scores": ranked_scores[:5],
+            "evidence": documents[:5],
+            "evidence_scores": scores[:5],
             "latency_ms": round(latency, 1),
             "method": "simple_rag",
         }

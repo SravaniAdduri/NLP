@@ -203,6 +203,7 @@ def main():
         rag = None
         agent = None
 
+        # Step 1: Run Simple RAG first (fast, naive)
         with col_rag:
             st.subheader("📄 Simple RAG")
             with st.spinner("Retrieving..."):
@@ -212,21 +213,24 @@ def main():
             else:
                 st.markdown("**Answer:**")
                 st.info(rag.get("response", "No response."))
-                st.caption(f"⏱️ {rag.get('latency_ms', 0):.0f} ms")
+                st.caption(f"⏱️ {rag.get('latency_ms', 0):.0f} ms | Method: Direct vector search (no reranking)")
                 render_evidence(rag.get("evidence", []), rag.get("evidence_scores", []))
 
+        # Step 2: Feed Simple RAG's response into Multi-Agent for verification & correction
         with col_agent:
             st.subheader("🤖 Multi-Agent Pipeline")
-            with st.spinner("Running pipeline..."):
-                agent = api_multi_agent(query)
+            with st.spinner("Running multi-agent pipeline (verify + correct)..."):
+                # Pass Simple RAG response as the llm_response to verify
+                rag_response = rag.get("response", "") if rag and "error" not in rag else ""
+                agent = api_multi_agent(query, llm_response=rag_response)
             if "error" in agent:
                 st.error(agent["error"])
             else:
-                st.markdown("**Answer:**")
+                st.markdown("**Corrected Answer:**")
                 agent_response = agent.get("corrected_response") or "No response."
                 st.success(agent_response)
                 latency = agent.get("metrics", {}).get("latency_ms", 0) if agent.get("metrics") else 0
-                st.caption(f"⏱️ {latency:.0f} ms")
+                st.caption(f"⏱️ {latency:.0f} ms | Method: Query rewrite → Rerank → Verify → Correct")
                 render_evidence(agent.get("ranked_evidence", []))
                 if agent.get("citations"):
                     with st.expander("📑 Citations"):
@@ -235,18 +239,17 @@ def main():
 
         # Automatic hallucination analysis for both generated responses
         rag_verification = None
-        agent_verification = None
-        with st.spinner("Running hallucination analysis for both responses..."):
+        agent_report = None
+        with st.spinner("Running hallucination analysis..."):
+            # Verify Simple RAG response
             if rag and "error" not in rag and rag.get("response"):
                 rag_verification = api_verify_response(
                     rag["response"],
                     rag.get("evidence", []),
                 )
-            if agent and "error" not in agent and agent.get("corrected_response"):
-                agent_verification = api_verify_response(
-                    agent["corrected_response"],
-                    agent.get("ranked_evidence", []),
-                )
+            # Multi-Agent already ran hallucination detection internally
+            if agent and "error" not in agent:
+                agent_report = agent.get("hallucination_report")
 
         st.markdown("---")
         st.subheader("🔬 Hallucination Analysis (Auto)")
@@ -273,19 +276,18 @@ def main():
         agent_hall_rate = 0.0
         agent_available = False
         with col_h2:
-            st.subheader("🤖 Multi-Agent")
-            if agent_verification and "error" not in agent_verification and agent_verification.get("sentence_results"):
+            st.subheader("🤖 Multi-Agent (of Simple RAG's response)")
+            if agent_report and agent_report.get("sentence_results"):
                 agent_available = True
-                av = agent_verification
-                agent_hall_rate = av.get("hallucination_rate", 0.0)
+                agent_hall_rate = agent_report.get("hallucination_rate", 0.0)
                 c1, c2, c3 = st.columns(3)
-                c1.metric("✅ Supported", av.get("supported_count", 0))
-                c2.metric("❌ Contradicted", av.get("contradicted_count", 0))
-                c3.metric("⚠️ Uncertain", av.get("neutral_count", 0))
+                c1.metric("✅ Supported", agent_report.get("supported_count", 0))
+                c2.metric("❌ Contradicted", agent_report.get("contradicted_count", 0))
+                c3.metric("⚠️ Uncertain", agent_report.get("neutral_count", 0))
                 st.metric("Hallucination Rate", f"{agent_hall_rate:.0%}")
-                render_sentence_highlight(av.get("sentence_results", []))
+                render_sentence_highlight(agent_report.get("sentence_results", []))
             else:
-                st.info("Could not analyze Multi-Agent response.")
+                st.info("Multi-Agent hallucination report not available.")
 
         st.markdown("---")
         st.subheader("🏁 Which Hallucinates More?")
@@ -293,23 +295,29 @@ def main():
             if rag_hall_rate > agent_hall_rate:
                 diff = rag_hall_rate - agent_hall_rate
                 st.error(
-                    f"Simple RAG hallucinates more: **{rag_hall_rate:.0%}** vs "
-                    f"Multi-Agent **{agent_hall_rate:.0%}** (difference **{diff:.0%}**)."
+                    f"**Simple RAG hallucinates more:** {rag_hall_rate:.0%} hallucination rate.\n\n"
+                    f"The Multi-Agent pipeline detected and corrected issues, reducing "
+                    f"hallucination by **{diff:.0%}** (from {rag_hall_rate:.0%} → {agent_hall_rate:.0%})."
                 )
             elif agent_hall_rate > rag_hall_rate:
                 diff = agent_hall_rate - rag_hall_rate
                 st.warning(
-                    f"Multi-Agent hallucinates more: **{agent_hall_rate:.0%}** vs "
-                    f"Simple RAG **{rag_hall_rate:.0%}** (difference **{diff:.0%}**)."
+                    f"**Multi-Agent shows higher hallucination rate:** {agent_hall_rate:.0%} vs "
+                    f"Simple RAG at {rag_hall_rate:.0%}.\n\n"
+                    f"Note: This is the hallucination rate of the *original* Simple RAG response "
+                    f"as analyzed by the Multi-Agent pipeline's NLI model with reranked evidence."
                 )
             else:
-                st.success(f"Both are equal at **{rag_hall_rate:.0%}** hallucination rate.")
+                st.success(f"Both analyses agree at **{rag_hall_rate:.0%}** hallucination rate.")
 
             c1, c2 = st.columns(2)
             c1.metric("Simple RAG Hallucination", f"{rag_hall_rate:.0%}")
-            c2.metric("Multi-Agent Hallucination", f"{agent_hall_rate:.0%}")
+            c2.metric("Multi-Agent Detection", f"{agent_hall_rate:.0%}")
+        elif rag_available:
+            st.metric("Simple RAG Hallucination Rate", f"{rag_hall_rate:.0%}")
+            st.info("Multi-Agent hallucination report unavailable for comparison.")
         else:
-            st.info("Comparison verdict unavailable because one or both analyses could not be completed.")
+            st.info("Comparison unavailable — could not complete analysis.")
 
     st.markdown("---")
 
