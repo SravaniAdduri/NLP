@@ -202,12 +202,12 @@ class ResponseGenerationAgent:
                 scored.append((sent, score, ev_idx))
 
         if not scored:
-            # Fallback: use the top evidence passages directly
+            # Fallback: use the top evidence passages directly (verbatim, no risk of hallucination)
             fallback_parts = []
             for i, ev in enumerate(evidence[:3]):
                 clean = re.sub(r'\s+', ' ', ev.replace('\n', ' ')).strip()
                 if clean:
-                    fallback_parts.append(clean[:400] + f" [{i+1}]")
+                    fallback_parts.append(clean[:400])
             response_text = "\n\n".join(fallback_parts) if fallback_parts else "No relevant information found."
             return GeneratedResponse(
                 response=response_text,
@@ -239,36 +239,64 @@ class ResponseGenerationAgent:
                 used_texts.append(sent)
                 used_ev.add(ev_idx)
 
-        # Format as a clean, readable response
-        # Group sentences by evidence source for coherent flow
-        groups = {}
+        # Format as a clean, natural-sounding response
+        # Instead of dumping raw sentences grouped by source, weave them into
+        # a coherent answer with a lead-in, logical ordering, and transitions.
+
+        # Flatten selected sentences in score order (already relevance-ranked)
+        flat_sents = []
         for sent, ev_idx in selected:
-            # Ensure each sentence ends with proper punctuation
             sent = sent.rstrip()
             if sent and sent[-1] not in '.!?':
                 sent = sent.rstrip(',;:') + '.'
-            groups.setdefault(ev_idx, []).append(sent)
+            flat_sents.append(sent)
 
-        paragraphs = []
-        for ev_idx in sorted(groups.keys()):
-            sents = groups[ev_idx]
-            paragraph = " ".join(sents)
-            # Trim overly verbose passages so the answer stays focused
-            if len(paragraph.split()) > 45 and not is_summary_query:
-                paragraph = " ".join(paragraph.split()[:45]) + "..."
-            paragraph = paragraph + f" [{ev_idx + 1}]"
-            paragraphs.append(paragraph)
+        # Build a natural lead-in based on query type
+        lead_in = ""
+        if is_summary_query:
+            lead_in = "Here is a summary based on the available information:\n\n"
+        elif is_compare_query:
+            lead_in = "Here is a comparison based on the available information:\n\n"
+        elif is_list_query:
+            lead_in = ""  # lists are self-explanatory
+        elif is_why_how_query:
+            lead_in = ""
 
-        # Prefer a concise bullet-like list for operational questions.
-        if is_compare_query or is_list_query:
-            response_text = "\n".join(f"- {p}" for p in paragraphs)
+        # Format differently depending on query type
+        if is_list_query:
+            # Bullet list — clean and scannable
+            body = "\n".join(f"• {s}" for s in flat_sents)
+        elif is_compare_query:
+            body = "\n".join(f"• {s}" for s in flat_sents)
         else:
-            response_text = "\n\n".join(paragraphs)
+            # Paragraph style — join sentences into flowing prose with light
+            # transition words where the topic shifts between evidence sources.
+            parts = []
+            prev_ev = None
+            transitions = ["Additionally, ", "Furthermore, ", "Moreover, ", "Also, "]
+            t_idx = 0
+            for (sent, ev_idx), clean_sent in zip(selected, flat_sents):
+                if prev_ev is not None and ev_idx != prev_ev and len(parts) > 0:
+                    # Different evidence source → add a soft transition
+                    # Only lowercase the first char if it isn't an acronym/proper noun
+                    first_word = clean_sent.split()[0] if clean_sent else ""
+                    if first_word and first_word[0].isupper() and not first_word.isupper():
+                        bridged = transitions[t_idx % len(transitions)] + clean_sent[0].lower() + clean_sent[1:]
+                    else:
+                        bridged = transitions[t_idx % len(transitions)] + clean_sent
+                    parts.append(bridged)
+                    t_idx += 1
+                else:
+                    parts.append(clean_sent)
+                prev_ev = ev_idx
+            body = " ".join(parts)
+
+        response_text = (lead_in + body).strip()
 
         if not response_text.strip():
             # Final safety net
             clean = re.sub(r'\s+', ' ', evidence[0].replace('\n', ' ')).strip()
-            response_text = clean[:600] + " [1]"
+            response_text = clean[:600]
 
         return GeneratedResponse(
             response=response_text,

@@ -177,7 +177,9 @@ class EvaluationAgent:
         neutral = sum(1 for l in labels if l == "NOT_ENOUGH_EVIDENCE")
         total = len(labels)
 
-        hallucination_rate = (contradicted + neutral) / total if total > 0 else 0.0
+        # Hallucination rate = contradicted / total (consistent with hallucination_detection_agent)
+        # NEUTRAL is NOT counted as hallucination.
+        hallucination_rate = contradicted / total if total > 0 else 0.0
         avg_confidence = float(np.mean(confidences)) if confidences else 0.0
 
         # Without ground truth, precision/recall are estimated from confidence

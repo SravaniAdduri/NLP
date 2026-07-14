@@ -83,6 +83,7 @@ class QueryResponse(BaseModel):
     verified_claims: List[VerifiedClaimSchema]
     metrics: Optional[MetricsSchema] = None
     ranked_evidence: List[str]
+    generated_evidence: List[str] = Field(default_factory=list)
     errors: List[str]
 
 

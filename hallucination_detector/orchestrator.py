@@ -573,16 +573,26 @@ class MultiAgentOrchestrator:
                 evidence_scores=state.get("evidence_scores", []),
             )
 
-            # If no upstream hallucination report exists (e.g., query-only mode with empty llm_response),
-            # evaluate hallucination on the generated response so the multi-agent pipeline always returns
-            # a native hallucination report.
-            generated_evidence = evidence[: max(1, min(5, len(result.citations)))] if evidence else []
-            generated_hallucination_report = state.get("hallucination_report")
-            generated_hallucination_rate = state.get("hallucination_rate", 0.0)
+            # Always use ALL ranked evidence for hallucination verification,
+            # not a subset based on citations count — avoids false NEUTRAL labels
+            # for sentences sourced from later evidence passages.
+            generated_evidence = list(evidence) if evidence else []
 
-            if generated_hallucination_report is None and result.response and generated_evidence:
+            # --- Self-correction loop ---
+            # Run hallucination detection on generated response.
+            # If hallucination rate > 10%, remove contradicted sentences and rebuild.
+            MAX_HALL_RATE = 0.10
+            MAX_CORRECTION_ROUNDS = 2
+            current_response = result.response
+            generated_hallucination_report = None
+            generated_hallucination_rate = 0.0
+
+            for correction_round in range(MAX_CORRECTION_ROUNDS + 1):
+                if not current_response or not generated_evidence:
+                    break
                 try:
-                    gen_report = self.hallucination_agent.detect(result.response, generated_evidence)
+                    gen_report = self.hallucination_agent.detect(current_response, generated_evidence)
+                    generated_hallucination_rate = gen_report.hallucination_rate
                     generated_hallucination_report = {
                         "original_response": gen_report.original_response,
                         "sentence_results": [
@@ -602,18 +612,40 @@ class MultiAgentOrchestrator:
                         "hallucination_rate": gen_report.hallucination_rate,
                         "overall_confidence": gen_report.overall_confidence,
                     }
-                    generated_hallucination_rate = gen_report.hallucination_rate
+
+                    # If under threshold or no contradictions, accept
+                    if generated_hallucination_rate <= MAX_HALL_RATE or gen_report.contradicted_count == 0:
+                        logger.info(f"Hallucination rate {generated_hallucination_rate:.2%} is within threshold after round {correction_round}")
+                        break
+
+                    # Remove contradicted sentences and try again
+                    if correction_round < MAX_CORRECTION_ROUNDS:
+                        contradicted_texts = {
+                            r.sentence for r in gen_report.sentence_results
+                            if r.label == "CONTRADICTED"
+                        }
+                        # Work at sentence level, not line level, to handle
+                        # multi-sentence paragraphs correctly.
+                        cleaned_response = current_response
+                        for ct in contradicted_texts:
+                            if ct in cleaned_response:
+                                logger.info(f"Self-correction: removing contradicted sentence: {ct[:80]}...")
+                                cleaned_response = cleaned_response.replace(ct, "")
+                        # Clean up leftover whitespace
+                        import re as _re
+                        cleaned_response = _re.sub(r'\n{3,}', '\n\n', cleaned_response)
+                        cleaned_response = _re.sub(r'  +', ' ', cleaned_response).strip()
+                        if cleaned_response and cleaned_response != current_response:
+                            current_response = cleaned_response
+                            logger.info(f"Self-correction round {correction_round + 1}: removed {len(contradicted_texts)} contradicted sentence(s)")
+                        else:
+                            break  # Nothing more to remove
                 except Exception as e:
                     logger.error(f"Post-generation hallucination detection failed: {e}")
-                    return {
-                        "corrected_response": result.response,
-                        "citations": result.citations,
-                        "generated_evidence": generated_evidence,
-                        "errors": state.get("errors", []) + [f"Post-generation hallucination detection: {str(e)}"],
-                    }
+                    break
 
             return {
-                "corrected_response": result.response,
+                "corrected_response": current_response,
                 "citations": result.citations,
                 "generated_evidence": generated_evidence,
                 "hallucination_report": generated_hallucination_report,

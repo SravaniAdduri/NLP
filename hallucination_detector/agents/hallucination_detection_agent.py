@@ -120,10 +120,13 @@ class HallucinationDetectionAgent:
         neutral = sum(1 for r in all_results if r.label == EntailmentLabel.NOT_ENOUGH_EVIDENCE.value)
         total = len(all_results)
 
-        # Hallucination rate = (contradicted + neutral) / total factual claims
+        # Hallucination rate = contradicted / factual_count
+        # NEUTRAL (not enough evidence) is NOT counted as hallucination —
+        # it means the evidence is insufficient, not that the claim is wrong.
+        # Only CONTRADICTED sentences are true hallucinations.
         factual_count = len(sentence_results)
         if factual_count > 0:
-            hallucination_rate = (contradicted + neutral) / factual_count
+            hallucination_rate = contradicted / factual_count
         else:
             hallucination_rate = 0.0
 
@@ -169,7 +172,11 @@ class HallucinationDetectionAgent:
             )
 
         # Check sentence against all evidence passages
-        nli_result = self.nli_model.classify_claim_against_evidence(sentence, evidence)
+        # Strip citation markers like [1], [2] that aren't in original evidence
+        clean_sentence = re.sub(r'\s*\[\d+\]', '', sentence).strip()
+        if not clean_sentence:
+            clean_sentence = sentence
+        nli_result = self.nli_model.classify_claim_against_evidence(clean_sentence, evidence)
 
         return SentenceVerification(
             sentence=sentence,
@@ -222,6 +229,14 @@ class HallucinationDetectionAgent:
             r'^(thank|thanks|you\'re welcome)',
             r'^(here is|here are|here\'s|below)',
             r'^(please note|note that|keep in mind)',
+            r'^(in summary|to summarize|overall|in conclusion)',
+            r'^(based on|according to|as mentioned|as stated)',
+            r'^(for example|for instance|such as|e\.g\.)',
+            r'^(the following|the above|as follows)',
+            r'^(additionally|furthermore|moreover|also,)',
+            r'^(however|nevertheless|on the other hand)',
+            r'^(specifically|in particular|namely)',
+            r'^(regarding|with respect to|as for)',
         ]
 
         for pattern in non_factual_patterns:

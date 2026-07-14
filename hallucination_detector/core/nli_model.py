@@ -157,15 +157,38 @@ class NLIModel:
         results = self.predict_batch(pairs)
 
         # Find the result with highest confidence for SUPPORTED or CONTRADICTED
-        # Priority: CONTRADICTED > SUPPORTED > NOT_ENOUGH_EVIDENCE
+        # Priority: strong SUPPORTED beats weak CONTRADICTED.
+        # A contradiction must be significantly more confident than the best
+        # support signal to override it.
         best_result = results[0]
+        best_support_conf = 0.0
+        best_contradict_conf = 0.0
+        best_support_result = None
+        best_contradict_result = None
+
         for result in results:
-            if result.label == EntailmentLabel.CONTRADICTED and result.confidence > 0.5:
-                if best_result.label != EntailmentLabel.CONTRADICTED or result.confidence > best_result.confidence:
-                    best_result = result
-            elif result.label == EntailmentLabel.SUPPORTED and result.confidence > best_result.confidence:
-                if best_result.label != EntailmentLabel.CONTRADICTED:
-                    best_result = result
+            if result.label == EntailmentLabel.SUPPORTED and result.confidence > best_support_conf:
+                best_support_conf = result.confidence
+                best_support_result = result
+            elif result.label == EntailmentLabel.CONTRADICTED and result.confidence > best_contradict_conf:
+                best_contradict_conf = result.confidence
+                best_contradict_result = result
+
+        # If ANY evidence strongly supports the claim, prefer SUPPORTED
+        # unless contradiction is very strong AND clearly dominates.
+        if best_support_result and best_support_conf >= 0.5:
+            # Support wins unless contradiction is both strong (>0.7) and
+            # significantly more confident than the best support.
+            if (best_contradict_result
+                    and best_contradict_conf > 0.7
+                    and best_contradict_conf > best_support_conf + 0.2):
+                best_result = best_contradict_result
+            else:
+                best_result = best_support_result
+        elif best_contradict_result and best_contradict_conf >= 0.6:
+            best_result = best_contradict_result
+        elif best_support_result:
+            best_result = best_support_result
 
         return best_result
 

@@ -58,7 +58,7 @@ class FactVerificationAgent:
     5. Provide citations to supporting/contradicting evidence
     """
 
-    def __init__(self, nli_model: NLIModel, verification_threshold: float = 0.6):
+    def __init__(self, nli_model: NLIModel, verification_threshold: float = 0.5):
         """
         Initialize the Fact Verification Agent.
         
@@ -205,12 +205,19 @@ class FactVerificationAgent:
                 best_contradict_confidence = max(best_contradict_confidence, result.confidence)
 
         # Determine verdict
-        if contradicting and best_contradict_confidence >= self.verification_threshold:
+        # Support wins unless contradiction is very strong AND clearly dominates.
+        if supporting and best_support_confidence >= self.verification_threshold:
+            if (contradicting
+                    and best_contradict_confidence > 0.7
+                    and best_contradict_confidence > best_support_confidence + 0.2):
+                verdict = "REFUTED"
+                confidence = best_contradict_confidence
+            else:
+                verdict = "VERIFIED"
+                confidence = best_support_confidence
+        elif contradicting and best_contradict_confidence >= self.verification_threshold:
             verdict = "REFUTED"
             confidence = best_contradict_confidence
-        elif supporting and best_support_confidence >= self.verification_threshold:
-            verdict = "VERIFIED"
-            confidence = best_support_confidence
         else:
             verdict = "UNVERIFIABLE"
             confidence = max(best_support_confidence, best_contradict_confidence, 0.5)

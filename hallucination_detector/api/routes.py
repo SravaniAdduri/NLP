@@ -106,7 +106,7 @@ async def simple_rag_query(request: QueryRequest):
         if documents:
             response_parts = []
             for i, doc in enumerate(documents[:3], 1):
-                # Basic cleaning only
+                # Basic cleaning only — no citation markers to avoid NLI confusion
                 clean = _re.sub(r'\s+', ' ', doc.replace('\n', ' ')).strip()
                 if len(clean) > 500:
                     # Cut at sentence boundary if possible
@@ -115,7 +115,7 @@ async def simple_rag_query(request: QueryRequest):
                         clean = clean[:cut_point + 1]
                     else:
                         clean = clean[:500] + "..."
-                response_parts.append(f"{clean} [{i}]")
+                response_parts.append(clean)
             response_text = "\n\n".join(response_parts)
         else:
             response_text = "No relevant information found in the uploaded document."
@@ -289,6 +289,7 @@ async def process_query(request: QueryRequest):
             verified_claims=verified_claims,
             metrics=metrics,
             ranked_evidence=result.get("ranked_evidence", []),
+            generated_evidence=result.get("generated_evidence", []),
             errors=result.get("errors", []),
         )
 
